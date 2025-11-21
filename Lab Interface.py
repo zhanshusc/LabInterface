@@ -63,6 +63,10 @@ class PsTAAnalysisApp(tk.Tk):
         ttk.Button(
             data_io_frame, text="Load psTA Data", command=self.load_data
         ).pack(fill='x', pady=2)
+
+        ttk.Button(
+            data_io_frame, text ="Load TCSPC Data", command=self.load_data).pack(fill='x', pady=2)
+        
         
         ttk.Button(
             data_io_frame, text="Load nsTA Data (optional)", command=self.placeholder_command
@@ -131,11 +135,13 @@ class PsTAAnalysisApp(tk.Tk):
         tab1 = ttk.Frame(tab_control, padding="10")
         tab2 = ttk.Frame(tab_control, padding="10")
         tab3 = ttk.Frame(tab_control, padding="10")
+        tab4 = ttk.Frame(tab_control, padding="10")
         
         # Add tabs to the notebook
         tab_control.add(tab1, text='Time-Domain Traces')
+        tab_control.add(tab4, text='Wavelength-Domain Traces')
         tab_control.add(tab2, text='2D Map View')
-        tab_control.add(tab3, text='Residuals / Cleaned')
+        tab_control.add(tab3, text='Fitting')
         
         # Make the notebook fill the middle panel
         tab_control.pack(expand=1, fill='both')
@@ -193,8 +199,8 @@ class PsTAAnalysisApp(tk.Tk):
         map_fig = Figure(figsize=(5, 4), dpi=100)
         map_ax = map_fig.add_subplot(111)
         map_ax.set_title("2D Map View (dat.TAmean)")
-        map_ax.set_xlabel("Time (log scale)")
-        map_ax.set_ylabel("Wavelength (nm)")
+        map_ax.set_xlabel("Wavelength (nm)" )
+        map_ax.set_ylabel("Time (log scale)")
         map_ax.text(0.5, 0.5, "UIAxes_Map", horizontalalignment='center', verticalalignment='center', transform=map_ax.transAxes, fontsize=16, color='gray', alpha=0.5)
 
         canvas_tab2 = FigureCanvasTkAgg(map_fig, master=tab2)
@@ -212,10 +218,10 @@ class PsTAAnalysisApp(tk.Tk):
         # Top Plot: Before
         before_fig = Figure(dpi=100)
         before_ax = before_fig.add_subplot(111)
-        before_ax.set_title("Before Cleaning")
+        before_ax.set_title("psTA")
         before_ax.set_ylabel("ΔA")
         before_ax.grid(True)
-        before_ax.text(0.5, 0.5, "Top: Before", horizontalalignment='center', verticalalignment='center', transform=before_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
+        before_ax.text(0.5, 0.5, "psTA", horizontalalignment='center', verticalalignment='center', transform=before_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
         
         canvas_tab3_top = FigureCanvasTkAgg(before_fig, master=tab3_main_frame)
         canvas_tab3_top.draw()
@@ -224,11 +230,11 @@ class PsTAAnalysisApp(tk.Tk):
         # Bottom Plot: After
         after_fig = Figure(dpi=100)
         after_ax = after_fig.add_subplot(111)
-        after_ax.set_title("After Cleaning")
+        after_ax.set_title("TCSPC")
         after_ax.set_xlabel("Time (ps/ns)")
-        after_ax.set_ylabel("ΔA")
+        after_ax.set_ylabel("Emission Intensity")
         after_ax.grid(True)
-        after_ax.text(0.5, 0.5, "Bottom: After", horizontalalignment='center', verticalalignment='center', transform=after_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
+        after_ax.text(0.5, 0.5, "TCSPC", horizontalalignment='center', verticalalignment='center', transform=after_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
         
         canvas_tab3_bot = FigureCanvasTkAgg(after_fig, master=tab3_main_frame)
         canvas_tab3_bot.draw()
