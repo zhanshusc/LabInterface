@@ -52,6 +52,15 @@ class PsTAAnalysisApp(tk.Tk):
         # --- Bottom Status Bar ---
         self._create_status_bar()
 
+        # --- Data Containers ---
+        # Data is the container for the primary data - ie experiment being analzyed 
+        # data 2 is a place holder for TCSPC for future use
+        # 1 set of wavelength and times place holder for now, if need be duplica
+        self.data = None
+        self.data2 = None
+        self.wavelength = None
+        self.times = None
+
     def _create_left_panel(self):
         """Populates the Left Panel (Data Control & Processing)"""
         frame = self.left_panel
@@ -346,26 +355,15 @@ class PsTAAnalysisApp(tk.Tk):
                 title="Select psTA Data File",
                 # Define which files show up. Change "*.csv" to your specific extension if needed
                 filetypes=[
-                    ("Data Files", "*.csv *.txt *.xlsx"), 
                     ("All Files", "*.*")
                 ]
             )
-
             # 2. Check if the user actually selected a file (didn't click Cancel)
             if file_path:
                 print(f"File selected: {file_path}")
                 
                 # 3. Load the data (Example using standard file reading)
-                try:
-                    # logic to parse your specific 'psTA' format goes here
-                    with open(file_path, 'r') as file:
-                        # Example: Read first line
-                        data = file.readline() 
-                        print("Data loaded successfully.")
-          
-                except Exception as e:
-                    print(f"Error loading file: {e}")
-
+                self.data = file_path
 
 if __name__ == "__main__":
     # Set high-DPI awareness for Windows
@@ -374,6 +372,5 @@ if __name__ == "__main__":
         windll.shcore.SetProcessDpiAwareness(1)
     except:
         pass # Fails on non-Windows systems
-
     app = PsTAAnalysisApp()
     app.mainloop()
