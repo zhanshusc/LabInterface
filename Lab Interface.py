@@ -2,11 +2,16 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox  
 from tkinter import filedialog
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import numpy as np
+import pandas as pd
+import matlab.engine
+
 # Using messagebox for placeholders
 
 # Import Matplotlib libraries for embedding plots
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
 
 class PsTAAnalysisApp(tk.Tk):
     """
@@ -191,7 +196,44 @@ class PsTAAnalysisApp(tk.Tk):
         canvas_tab1.draw()
         canvas_tab1.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # --- Populate Tab 2: 2D Map View ---
+
+         # --- Populate Tab 1: Time-Domain Traces ---
+        # Add controls
+        tab4_controls = ttk.Frame(tab4)
+        tab4_controls.pack(fill='x', pady=5)
+        
+        ttk.Label(tab4_controls, text="Wavelength:").pack(side='left', padx=5)
+        self.trace_wavelength_combo = ttk.Combobox(
+            tab4_controls, 
+            values=["(no data loaded)", "500", "520", "550"]
+        )
+        self.trace_wavelength_combo.current(0)
+        self.trace_wavelength_combo.pack(side='left', padx=5)
+        
+        self.show_scans_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            tab4_controls, text="Show individual scans", variable=self.show_scans_var
+        ).pack(side='left', padx=5)
+        
+        self.show_mean_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            tab4_controls, text="Show mean trace", variable=self.show_mean_var
+        ).pack(side='left', padx=5)
+        
+        # Add Matplotlib Plot Canvas (UIAxes_Traces)
+        trace_fig = Figure(figsize=(5, 4), dpi=100)
+        trace_ax = trace_fig.add_subplot(111)
+        trace_ax.set_title("Wavelength-Domain Traces")
+        trace_ax.set_xlabel("Wavelengths / nm")
+        trace_ax.set_ylabel("ΔA")
+        trace_ax.grid(True)
+        trace_ax.text(0.5, 0.5, "UIAxes_Traces", horizontalalignment='center', verticalalignment='center', transform=trace_ax.transAxes, fontsize=16, color='gray', alpha=0.5)
+
+        canvas_tab4 = FigureCanvasTkAgg(trace_fig, master=tab4)
+        canvas_tab4.draw()
+        canvas_tab4.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # --- Populate Tab 3: 2D Map View ---
         tab2_controls = ttk.Frame(tab2)
         tab2_controls.pack(fill='x', pady=5)
 
@@ -205,18 +247,18 @@ class PsTAAnalysisApp(tk.Tk):
         ).pack(side='left', padx=5)
 
         # Add Matplotlib Plot Canvas (UIAxes_Map)
-        map_fig = Figure(figsize=(5, 4), dpi=100)
-        map_ax = map_fig.add_subplot(111)
-        map_ax.set_title("2D Map View (dat.TAmean)")
-        map_ax.set_xlabel("Wavelength (nm)" )
-        map_ax.set_ylabel("Time (log scale)")
-        map_ax.text(0.5, 0.5, "UIAxes_Map", horizontalalignment='center', verticalalignment='center', transform=map_ax.transAxes, fontsize=16, color='gray', alpha=0.5)
+        self.map_fig = Figure(figsize=(5, 4), dpi=100)
+        self.map_ax = self.map_fig.add_subplot(111)
+        self.map_ax.set_title("2D Map View (dat.TAmean)")
+        self.map_ax.set_xlabel("Wavelength (nm)" )
+        self.map_ax.set_ylabel("Time (log scale)")
+        self.map_ax.text(0.5, 0.5, "UIAxes_Map", horizontalalignment='center', verticalalignment='center', transform=self.map_ax.transAxes, fontsize=16, color='gray', alpha=0.5)
 
-        canvas_tab2 = FigureCanvasTkAgg(map_fig, master=tab2)
-        canvas_tab2.draw()
-        canvas_tab2.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas_tab2 = FigureCanvasTkAgg(self.map_fig, master=tab2)
+        self.canvas_tab2.draw()
+        self.canvas_tab2.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # --- Populate Tab 3: Residuals / Cleaned Comparison ---
+        # --- Populate Tab 4: Residuals / Cleaned Comparison ---
         # This tab will have two plots, so we use a main frame
         tab3_main_frame = ttk.Frame(tab3)
         tab3_main_frame.pack(fill=tk.BOTH, expand=True)
@@ -224,7 +266,7 @@ class PsTAAnalysisApp(tk.Tk):
         tab3_main_frame.grid_rowconfigure(1, weight=1)
         tab3_main_frame.grid_columnconfigure(0, weight=1)
         
-        # Top Plot: Before
+        # Top Plot: TA data
         before_fig = Figure(dpi=100)
         before_ax = before_fig.add_subplot(111)
         before_ax.set_title("psTA")
@@ -236,7 +278,7 @@ class PsTAAnalysisApp(tk.Tk):
         canvas_tab3_top.draw()
         canvas_tab3_top.get_tk_widget().grid(row=0, column=0, sticky="nsew", pady=2)
 
-        # Bottom Plot: After
+        # Bottom Plot: TCSPC
         after_fig = Figure(dpi=100)
         after_ax = after_fig.add_subplot(111)
         after_ax.set_title("TCSPC")
@@ -347,23 +389,70 @@ class PsTAAnalysisApp(tk.Tk):
         # self.after(2000, lambda: self.progress_bar.pack_forget())
         # self.after(2000, lambda: self.status_label.config(text="Status: Ready."))
     def load_data(self):
-            """
-            Opens a file dialog for the user to select a file.
-            """
-            # 1. Open the file explorer
-            file_path = filedialog.askopenfilename(
-                title="Select psTA Data File",
-                # Define which files show up. Change "*.csv" to your specific extension if needed
-                filetypes=[
-                    ("All Files", "*.*")
-                ]
-            )
-            # 2. Check if the user actually selected a file (didn't click Cancel)
-            if file_path:
-                print(f"File selected: {file_path}")
-                
-                # 3. Load the data (Example using standard file reading)
-                self.data = file_path
+        file_path = filedialog.askopenfilename(
+            title="Select psTA Data File",
+            filetypes=[("All Files", "*.*")]
+        )
+
+        if not file_path:
+            return
+
+        self.status_label.config(text="Status: Running MATLAB analysis...")
+        self.update_idletasks()
+
+        try:
+            self.run_matlab_analysis(file_path)
+            self.status_label.config(text="Status: Analysis complete.")
+        except Exception as e:
+            messagebox.showerror("MATLAB Error", str(e))
+            self.status_label.config(text="Status: Error during analysis.")
+
+    def run_matlab_analysis(self, data_file):
+        eng = matlab.engine.start_matlab()
+
+        # Add path to MATLAB script
+        eng.addpath(r"./TAExperiment.m", nargout=0)
+
+        # Run MATLAB function
+        dat = eng.TAExperiment(data_file)
+        eng.workspace['dat'] = dat 
+        # Extract arrays
+        arr = np.array(eng.eval("dat.TAMean"))
+        times = np.array(eng.eval("dat.times")).flatten()
+        wavelengths = np.array(eng.eval("dat.wavelengths")).flatten()
+
+        eng.quit()
+
+        # Store for later use
+        self.data = arr
+        self.times = times
+        self.wavelength = wavelengths
+
+        # Update the 2D map
+        self.update_2d_map()
+    def update_2d_map(self):
+        self.map_ax.clear()
+
+        im = self.map_ax.imshow(
+            self.data,
+            aspect='auto',
+            origin='lower',
+            extent=[
+                self.wavelength.min(),
+                self.wavelength.max(),
+                self.times.min(),
+                self.times.max()
+            ]
+        )
+
+        self.map_ax.set_title("2D Map View (TA Mean)")
+        self.map_ax.set_xlabel("Wavelength (nm)")
+        self.map_ax.set_ylabel("Time")
+
+        if self.colorbar_toggle_var.get():
+            self.map_fig.colorbar(im, ax=self.map_ax)
+
+        self.canvas_tab2.draw()
 
 if __name__ == "__main__":
     # Set high-DPI awareness for Windows
