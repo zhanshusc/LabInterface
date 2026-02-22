@@ -2,11 +2,13 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox  
 from tkinter import filedialog
+from tkinter import simpledialog
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 import pandas as pd
 import matlab.engine
+import threading
 
 # Using messagebox for placeholders
 
@@ -66,6 +68,16 @@ class PsTAAnalysisApp(tk.Tk):
         self.wavelength = None
         self.times = None
 
+        # --- Matlab Environment Start ---
+        self.eng = matlab.engine.start_matlab()
+
+        # Add path to MATLAB script
+        self.eng.addpath(r"./TAExperiment.m", nargout=0)
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.map_colorbar = None
+
+    
+
     def _create_left_panel(self):
         """Populates the Left Panel (Data Control & Processing)"""
         frame = self.left_panel
@@ -97,12 +109,13 @@ class PsTAAnalysisApp(tk.Tk):
         preproc_frame = ttk.LabelFrame(frame, text="Preprocessing", padding="10")
         preproc_frame.pack(fill='x', pady=5)
 
+        # Background Correction controls (user input + run)
         ttk.Button(
-            preproc_frame, text="Background Correction", command=self.placeholder_command
+            preproc_frame, text="Background Correction", command=self.background_correction
         ).pack(fill='x', pady=2)
         
         ttk.Button(
-            preproc_frame, text="Dispersion Correction", command=self.placeholder_command
+            preproc_frame, text="Dispersion Correction", command=self.dispersion_correction
         ).pack(fill='x', pady=2)
 
         # --- Sub-section: Outlier Removal ---
@@ -408,20 +421,14 @@ class PsTAAnalysisApp(tk.Tk):
             self.status_label.config(text="Status: Error during analysis.")
 
     def run_matlab_analysis(self, data_file):
-        eng = matlab.engine.start_matlab()
-
-        # Add path to MATLAB script
-        eng.addpath(r"./TAExperiment.m", nargout=0)
 
         # Run MATLAB function
-        dat = eng.TAExperiment(data_file)
-        eng.workspace['dat'] = dat 
+        dat = self.eng.TAExperiment(data_file)
+        self.eng.workspace['dat'] = dat 
         # Extract arrays
-        arr = np.array(eng.eval("dat.TAMean"))
-        times = np.array(eng.eval("dat.times")).flatten()
-        wavelengths = np.array(eng.eval("dat.wavelengths")).flatten()
-
-        eng.quit()
+        arr = np.array(self.eng.eval("dat.TAMean"))
+        times = np.array(self.eng.eval("dat.times")).flatten()
+        wavelengths = np.array(self.eng.eval("dat.wavelengths")).flatten()
 
         # Store for later use
         self.data = arr
@@ -430,9 +437,14 @@ class PsTAAnalysisApp(tk.Tk):
 
         # Update the 2D map
         self.update_2d_map()
-    def update_2d_map(self):
-        self.map_ax.clear()
 
+    def update_2d_map(self):
+        self.map_fig.clear()
+        
+        # Re-add the main axis
+        self.map_ax = self.map_fig.add_subplot(111)
+        
+        # Plot data
         im = self.map_ax.imshow(
             self.data,
             aspect='auto',
@@ -449,10 +461,192 @@ class PsTAAnalysisApp(tk.Tk):
         self.map_ax.set_xlabel("Wavelength (nm)")
         self.map_ax.set_ylabel("Time")
 
+        # Add colorbar if toggled
         if self.colorbar_toggle_var.get():
-            self.map_fig.colorbar(im, ax=self.map_ax)
+            self.map_colorbar = self.map_fig.colorbar(im, ax=self.map_ax)
+        else:
+            self.map_colorbar = None
 
+        # Redraw the canvas
         self.canvas_tab2.draw()
+
+
+            
+    def background_correction(self):
+        """
+        Ask user for upper bound after button press,
+        then call subtractTABackground(dat, upper_bound)
+        """
+
+        if self.data is None:
+            messagebox.showwarning("No Data", "Load data before running background correction.")
+            return
+
+        # Ask user for float input
+        upper_val = simpledialog.askfloat(
+            "Background Correction",
+            "Enter upper bound for background subtraction:",
+            parent=self
+        )
+        # User pressed cancel
+        if upper_val is None:
+            return
+        self.status_label.config(text=f"Status: Running background correction (upper={upper_val})...")
+        self.update_idletasks()
+        try:
+            # Get current MATLAB dat
+            dat = self.eng.workspace['dat']
+            # If MATLAB function RETURNS updated dat
+            self.eng.subtractTABackground(dat, float(upper_val), nargout=0)
+            corrected_dat = self.eng.workspace['dat']
+
+            # Store back in workspace
+            self.eng.workspace['dat'] = corrected_dat
+
+            # Extract updated arrays
+            arr = np.array(self.eng.eval("dat.TAMean"))
+            times = np.array(self.eng.eval("dat.times")).flatten()
+            wavelengths = np.array(self.eng.eval("dat.wavelengths")).flatten()
+
+            # Update Python-side data
+            self.data = arr
+            self.times = times
+            self.wavelength = wavelengths
+
+            # Refresh 2D map
+            self.update_2d_map()
+
+            self.status_label.config(text="Status: Background correction complete.")
+            messagebox.showinfo("Success", "Background subtraction finished successfully.")
+
+        except Exception as e:
+            messagebox.showerror("MATLAB Error", str(e))
+            self.status_label.config(text=f"Status: Error during background correction.{e}")
+
+    def dispersion_correction(self):
+        """Show options for dispersion correction."""
+        if getattr(self, "eng", None) is None:
+            return messagebox.showerror("MATLAB Not Running", "MATLAB engine not available.")
+        if self.data is None:
+            return messagebox.showwarning("No Data", "Load data before running dispersion correction.")
+
+        # Small top-level chooser window
+        chooser = tk.Toplevel(self)
+        chooser.title("Dispersion Correction Options")
+        chooser.transient(self)
+        chooser.grab_set()
+        chooser.geometry("450x200")
+
+        ttk.Label(chooser, text="Choose dispersion correction action:", padding=8).pack()
+
+        # Using lambda allows us to destroy the window and call the function in one line
+        ttk.Button(chooser, text="Correct Dispersions (MATLAB popup)", 
+                   command=lambda: [chooser.destroy(), self._call_matlab_correctdispersion()]).pack(fill='x', padx=20, pady=4)
+        ttk.Button(chooser, text="Apply External Dispersion Correction", 
+                   command=lambda: [chooser.destroy(), self._open_apply_external_dialog()]).pack(fill='x', padx=20, pady=4)
+
+        chooser.bind("<Escape>", lambda e: chooser.destroy())
+
+    def _call_matlab_correctdispersion(self):
+        """Call dat.correctdispersion() or correctdispersion(dat) in MATLAB."""
+        self._update_status("Launching MATLAB dispersion-correction popup...")
+        try:
+            # Let MATLAB handle the method vs function resolution natively
+            cmd = "dat.correctDispersion();"
+            self.eng.eval(cmd, nargout=0)
+            
+            self._refresh_dat_from_matlab("Dispersion correction (MATLAB) finished.")
+        except Exception as e:
+            messagebox.showerror("MATLAB Error", f"Error while calling correctdispersion:\n{e}")
+            self._update_status("Error calling correctdispersion.")
+
+    def _open_apply_external_dialog(self):
+        """Prompt user for coefficients using a custom Toplevel and apply them in MATLAB."""
+        default_vec = [-7.44208608527694e-06, 0.00672243358275736, -0.951026821920219]
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Apply External Dispersion Correction")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        dlg.geometry("520x160")
+
+        ttk.Label(dlg, text="Enter three dispersion coefficients (comma or space separated):", 
+                  wraplength=480, padding=8).pack(anchor="w")
+
+        entry_var = tk.StringVar(value=", ".join(f"{v:.18g}" for v in default_vec))
+        ttk.Entry(dlg, textvariable=entry_var, width=60).pack(padx=8, pady=6, fill='x')
+
+        status_lbl = ttk.Label(dlg, text="", foreground="red")
+        status_lbl.pack(anchor="w", padx=8)
+
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.pack(fill='x', pady=10, padx=8)
+
+        def on_ok(event=None):
+            txt = entry_var.get().strip()
+            try:
+                # Parse numbers: accept commas and/or spaces
+                parts = [p for p in txt.replace(",", " ").split() if p]
+                if len(parts) != 3:
+                    raise ValueError("Please enter exactly 3 numbers.")
+                coeffs = [float(p) for p in parts]
+            except Exception as ex:
+                status_lbl.config(text=f"Invalid input: {ex}")
+                return
+
+            dlg.destroy()
+            
+            # Apply to MATLAB
+            self._update_status("Applying external dispersion correction...")
+            try:
+                vec_str = f"[{' '.join(map(str, coeffs))}]"
+                self.eng.eval(f"applyExternalDispersionCorrection(dat, {vec_str});", nargout=0)
+                self._refresh_dat_from_matlab("External dispersion correction applied.")
+            except Exception as e:
+                messagebox.showerror("MATLAB Error", f"Error applying external correction:\n{e}")
+                self._update_status("Error during external dispersion correction.")
+        def on_cancel(event=None):
+            dlg.destroy()
+
+        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side='right', padx=6)
+        ttk.Button(btn_frame, text="Apply", command=on_ok).pack(side='right')
+
+        dlg.bind("<Return>", on_ok)
+        dlg.bind("<Escape>", on_cancel)
+
+    def _update_status(self, msg):
+        """Helper to update status label and force UI refresh."""
+        self.status_label.config(text=f"Status: {msg}")
+        self.update_idletasks()
+
+    def _refresh_dat_from_matlab(self, success_msg):
+        """Pull dat arrays from MATLAB workspace and update Python state."""
+        try:
+            self.data = np.array(self.eng.eval("dat.TAMean"))
+            self.times = np.array(self.eng.eval("dat.times")).flatten()
+            self.wavelength = np.array(self.eng.eval("dat.wavelengths")).flatten()
+
+            # Refresh map if the method exists
+            if hasattr(self, 'update_2d_map'):
+                self.update_2d_map()
+                
+            self._update_status(success_msg)
+            messagebox.showinfo("Done", success_msg)
+            
+        except Exception as e:
+            messagebox.showerror("MATLAB Error", f"Could not refresh dat from MATLAB workspace: {e}")
+
+
+    def on_closing(self):
+        if messagebox.askokcancel("Quit", "Do you want to quit?"):
+            try:
+                if hasattr(self, "eng"):
+                    self.eng.quit()
+            except:
+                pass
+            self.destroy()
+
 
 if __name__ == "__main__":
     # Set high-DPI awareness for Windows
