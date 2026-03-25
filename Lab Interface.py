@@ -14,6 +14,9 @@ import threading
 
 # Import Matplotlib libraries for embedding plots
 
+# Wavelength and time slices based on comma separated list of values
+# implement min and max fitting for the heatmap where any value above the maximum or below the minimum becomes it.
+# Ideally use the bar on the heatmap  
 
 class PsTAAnalysisApp(tk.Tk):
     """
