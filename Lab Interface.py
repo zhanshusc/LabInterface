@@ -4,6 +4,7 @@ from tkinter import messagebox
 from tkinter import filedialog
 from tkinter import simpledialog
 from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 import pandas as pd
@@ -22,7 +23,7 @@ class PsTAAnalysisApp(tk.Tk):
     """
     A Python tkinter application replicating the psTA Analysis Suite layout
     described for MATLAB App Designer.
-    """
+    """ 
     def __init__(self):
         super().__init__()
 
@@ -177,96 +178,109 @@ class PsTAAnalysisApp(tk.Tk):
         tab_control.pack(expand=1, fill='both')
 
         # --- Populate Tab 1: Time-Domain Traces ---
-        # Add controls
         tab1_controls = ttk.Frame(tab1)
         tab1_controls.pack(fill='x', pady=5)
-        
-        ttk.Label(tab1_controls, text="Wavelength:").pack(side='left', padx=5)
-        self.trace_wavelength_combo = ttk.Combobox(
-            tab1_controls, 
-            values=["(no data loaded)", "500", "520", "550"]
+
+        ttk.Label(tab1_controls, text="Times (ps), comma-separated:").pack(side='left', padx=5)
+        self.time_slice_var = tk.StringVar(value="0.1, 1, 10, 100")
+        ttk.Entry(tab1_controls, textvariable=self.time_slice_var, width=35).pack(side='left', padx=5)
+        ttk.Button(
+            tab1_controls, text="Plot", command=self.plot_time_slices
+        ).pack(side='left', padx=2)
+        ttk.Button(
+            tab1_controls, text="Clear",
+            command=lambda: self._clear_slice_axis(
+                self.ax_time, self.canvas_time,
+                "Wavelength (nm)", "ΔA", "Time-Domain Traces"
+            )
+        ).pack(side='left', padx=2)
+
+        self.fig_time = Figure(figsize=(5, 4), dpi=100)
+        self.ax_time = self.fig_time.add_subplot(111)
+        self.ax_time.set_title("Time-Domain Traces")
+        self.ax_time.set_xlabel("Wavelength (nm)")
+        self.ax_time.set_ylabel("ΔA")
+        self.ax_time.grid(True)
+        self.ax_time.text(
+            0.5, 0.5, "Load data, then enter times above",
+            ha='center', va='center', transform=self.ax_time.transAxes,
+            fontsize=12, color='gray', alpha=0.5
         )
-        self.trace_wavelength_combo.current(0)
-        self.trace_wavelength_combo.pack(side='left', padx=5)
-        
-        self.show_scans_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            tab1_controls, text="Show individual scans", variable=self.show_scans_var
-        ).pack(side='left', padx=5)
-        
-        self.show_mean_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            tab1_controls, text="Show mean trace", variable=self.show_mean_var
-        ).pack(side='left', padx=5)
-        
-        # Add Matplotlib Plot Canvas (UIAxes_Traces)
-        trace_fig = Figure(figsize=(5, 4), dpi=100)
-        trace_ax = trace_fig.add_subplot(111)
-        trace_ax.set_title("Time-Domain Traces")
-        trace_ax.set_xlabel("Time (ps/ns)")
-        trace_ax.set_ylabel("ΔA")
-        trace_ax.grid(True)
-        trace_ax.text(0.5, 0.5, "UIAxes_Traces", horizontalalignment='center', verticalalignment='center', transform=trace_ax.transAxes, fontsize=16, color='gray', alpha=0.5)
-
-        canvas_tab1 = FigureCanvasTkAgg(trace_fig, master=tab1)
-        canvas_tab1.draw()
-        canvas_tab1.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas_time = FigureCanvasTkAgg(self.fig_time, master=tab1)
+        self.canvas_time.draw()
+        self.canvas_time.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
 
-         # --- Populate Tab 1: Time-Domain Traces ---
+        # --- Populate Tab 2: Wavelength-domain Traces ---
         # Add controls
         tab4_controls = ttk.Frame(tab4)
         tab4_controls.pack(fill='x', pady=5)
-        
-        ttk.Label(tab4_controls, text="Wavelength:").pack(side='left', padx=5)
-        self.trace_wavelength_combo = ttk.Combobox(
-            tab4_controls, 
-            values=["(no data loaded)", "500", "520", "550"]
-        )
-        self.trace_wavelength_combo.current(0)
-        self.trace_wavelength_combo.pack(side='left', padx=5)
-        
-        self.show_scans_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            tab4_controls, text="Show individual scans", variable=self.show_scans_var
-        ).pack(side='left', padx=5)
-        
-        self.show_mean_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            tab4_controls, text="Show mean trace", variable=self.show_mean_var
-        ).pack(side='left', padx=5)
-        
-        # Add Matplotlib Plot Canvas (UIAxes_Traces)
-        trace_fig = Figure(figsize=(5, 4), dpi=100)
-        trace_ax = trace_fig.add_subplot(111)
-        trace_ax.set_title("Wavelength-Domain Traces")
-        trace_ax.set_xlabel("Wavelengths / nm")
-        trace_ax.set_ylabel("ΔA")
-        trace_ax.grid(True)
-        trace_ax.text(0.5, 0.5, "UIAxes_Traces", horizontalalignment='center', verticalalignment='center', transform=trace_ax.transAxes, fontsize=16, color='gray', alpha=0.5)
 
-        canvas_tab4 = FigureCanvasTkAgg(trace_fig, master=tab4)
-        canvas_tab4.draw()
-        canvas_tab4.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        ttk.Label(tab4_controls, text="Wavelengths (nm), comma-separated:").pack(side='left', padx=5)
+        self.wl_slice_var = tk.StringVar(value="500, 550, 600, 650")
+        ttk.Entry(tab4_controls, textvariable=self.wl_slice_var, width=35).pack(side='left', padx=5)
+        ttk.Button(
+            tab4_controls, text="Plot", command=self.plot_wavelength_slices
+        ).pack(side='left', padx=2)
+        ttk.Button(
+            tab4_controls, text="Clear",
+            command=lambda: self._clear_slice_axis(
+                self.ax_wl, self.canvas_wl,
+                "Time (ps)", "ΔA", "Wavelength-Domain Traces"
+            )
+        ).pack(side='left', padx=2)
+
+        self.fig_wl = Figure(figsize=(5, 4), dpi=100)
+        self.ax_wl = self.fig_wl.add_subplot(111)
+        self.ax_wl.set_title("Wavelength-Domain Traces")
+        self.ax_wl.set_xlabel("Time (ps)")
+        self.ax_wl.set_ylabel("ΔA")
+        self.ax_wl.grid(True)
+        self.ax_wl.text(
+            0.5, 0.5, "Load data, then enter wavelengths above",
+            ha='center', va='center', transform=self.ax_wl.transAxes,
+            fontsize=12, color='gray', alpha=0.5
+        )
+        self.canvas_wl = FigureCanvasTkAgg(self.fig_wl, master=tab4)
+        self.canvas_wl.draw()
+        self.canvas_wl.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
 
         # --- Populate Tab 3: 2D Map View ---
+    
         tab2_controls = ttk.Frame(tab2)
         tab2_controls.pack(fill='x', pady=5)
 
+        # Min/Max clamp controls
+        ttk.Label(tab2_controls, text="Min:").pack(side='left', padx=(5, 2))
+        self.map_vmin_var = tk.StringVar(value="")
+        self.map_vmin_entry = ttk.Entry(tab2_controls, textvariable=self.map_vmin_var, width=8)
+        self.map_vmin_entry.pack(side='left', padx=(0, 5))
+
+        ttk.Label(tab2_controls, text="Max:").pack(side='left', padx=(5, 2))
+        self.map_vmax_var = tk.StringVar(value="")
+        self.map_vmax_entry = ttk.Entry(tab2_controls, textvariable=self.map_vmax_var, width=8)
+        self.map_vmax_entry.pack(side='left', padx=(0, 5))
+
         ttk.Button(
-            tab2_controls, text="Normalize", command=self.placeholder_command
+            tab2_controls, text="Apply", command=self.update_2d_map
         ).pack(side='left', padx=5)
-        
+
+        ttk.Button(
+            tab2_controls, text="Reset", command=self.reset_map_clamp
+        ).pack(side='left', padx=5)
+
         self.colorbar_toggle_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             tab2_controls, text="Show Colorbar", variable=self.colorbar_toggle_var
         ).pack(side='left', padx=5)
 
+
         # Add Matplotlib Plot Canvas (UIAxes_Map)
         self.map_fig = Figure(figsize=(5, 4), dpi=100)
         self.map_ax = self.map_fig.add_subplot(111)
         self.map_ax.set_title("2D Map View (dat.TAmean)")
-        self.map_ax.set_xlabel("Wavelength (nm)" )
+        self.map_ax.set_xlabel("Wavelength (nm)")
         self.map_ax.set_ylabel("Time (log scale)")
         self.map_ax.text(0.5, 0.5, "UIAxes_Map", horizontalalignment='center', verticalalignment='center', transform=self.map_ax.transAxes, fontsize=16, color='gray', alpha=0.5)
 
@@ -438,14 +452,135 @@ class PsTAAnalysisApp(tk.Tk):
         self.times = times
         self.wavelength = wavelengths
 
+        # Populate entry fields with data min/max as defaults
+        self.map_vmin_var.set(f"{arr.min():.4g}")
+        self.map_vmax_var.set(f"{arr.max():.4g}")
+
         # Update the 2D map
         self.update_2d_map()
+
+    def _parse_slice_values(self, text: str, label: str):
+        """Parse a comma-separated string into a sorted list of floats.
+        Returns None and shows an error dialog on bad input."""
+        try:
+            vals = [float(v.strip()) for v in text.split(",") if v.strip()]
+            if not vals:
+                raise ValueError("empty")
+            return sorted(vals)
+        except ValueError:
+            messagebox.showerror(
+                "Input Error",
+                f"Invalid {label} — enter comma-separated numbers.\n"
+                f'Example: "0.1, 1, 10, 100"'
+            )
+            return None
+
+    def plot_time_slices(self):
+        """Plot ΔA vs wavelength for each requested time value (Tab 1)."""
+        if not hasattr(self, 'data') or self.data is None:
+            messagebox.showwarning("No Data", "Load a data file first.")
+            return
+    
+        targets = self._parse_slice_values(self.time_slice_var.get(), "time")
+        if targets is None:
+            return
+    
+        self.ax_time.cla()
+        self.ax_time.set_title("Time-Domain Traces")
+        self.ax_time.set_xlabel("Wavelength (nm)")
+        self.ax_time.set_ylabel("ΔA")
+        self.ax_time.grid(True)
+        self.ax_time.axhline(0, color='gray', lw=0.8, ls='--')
+    
+        cmap = plt.get_cmap("plasma")
+        colors = [cmap(i / max(len(targets) - 1, 1)) for i in range(len(targets))]
+    
+        for t_req, color in zip(targets, colors):
+            idx = int(np.argmin(np.abs(self.times - t_req)))
+            t_actual = self.times[idx]
+            self.ax_time.plot(
+                self.wavelength, self.data[idx, :],
+                color=color, lw=1.5, label=f"{t_actual:.3g} ps"
+            )
+    
+        self.ax_time.legend(fontsize=8, framealpha=0.7)
+        self.fig_time.tight_layout()
+        self.canvas_time.draw()
+ 
+ 
+    def plot_wavelength_slices(self):
+        """Plot ΔA vs time for each requested wavelength value (Tab 4)."""
+        if not hasattr(self, 'data') or self.data is None:
+            messagebox.showwarning("No Data", "Load a data file first.")
+            return
+    
+        targets = self._parse_slice_values(self.wl_slice_var.get(), "wavelength")
+        if targets is None:
+            return
+    
+        self.ax_wl.cla()
+        self.ax_wl.set_title("Wavelength-Domain Traces")
+        self.ax_wl.set_xlabel("Time (ps)")
+        self.ax_wl.set_ylabel("ΔA")
+        self.ax_wl.grid(True)
+        self.ax_wl.axhline(0, color='gray', lw=0.8, ls='--')
+    
+        cmap = plt.get_cmap("viridis")
+        colors = [cmap(i / max(len(targets) - 1, 1)) for i in range(len(targets))]
+    
+        for wl_req, color in zip(targets, colors):
+            idx = int(np.argmin(np.abs(self.wavelength - wl_req)))
+            wl_actual = self.wavelength[idx]
+            self.ax_wl.plot(
+                self.times, self.data[:, idx],
+                color=color, lw=1.5, label=f"{wl_actual:.4g} nm"
+            )
+    
+        self.ax_wl.legend(fontsize=8, framealpha=0.7)
+        self.fig_wl.tight_layout()
+        self.canvas_wl.draw()
+    
+    
+    def _clear_slice_axis(self, ax, canvas, xlabel, ylabel, title):
+        """Reset a slice plot to its blank placeholder state."""
+        ax.cla()
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.grid(True)
+        ax.text(
+            0.5, 0.5, "Load data, then enter values above",
+            ha='center', va='center', transform=ax.transAxes,
+            fontsize=12, color='gray', alpha=0.5
+        )
+        canvas.draw()
+
+
+    def reset_map_clamp(self):
+        """Reset min/max fields to the actual data range and redraw."""
+        if self.data is not None:
+            self.map_vmin_var.set(f"{self.data.min():.4g}")
+            self.map_vmax_var.set(f"{self.data.max():.4g}")
+            self.update_2d_map()
 
     def update_2d_map(self):
         self.map_fig.clear()
         
         # Re-add the main axis
         self.map_ax = self.map_fig.add_subplot(111)
+        # Parse vmin/vmax from entry fields; fall back to data range if invalid
+        try:
+            vmin = float(self.map_vmin_var.get())
+        except (ValueError, AttributeError):
+            vmin = self.data.min() if self.data is not None else None
+
+        try:
+            vmax = float(self.map_vmax_var.get())
+        except (ValueError, AttributeError):
+            vmax = self.data.max() if self.data is not None else None
+
+        # Clamp the data so values outside [vmin, vmax] are pinned to the boundary
+        display_data = np.clip(self.data, vmin, vmax)
         
         # Plot data
         im = self.map_ax.imshow(
@@ -457,7 +592,9 @@ class PsTAAnalysisApp(tk.Tk):
                 self.wavelength.max(),
                 self.times.min(),
                 self.times.max()
-            ]
+            ],
+            vmin=vmin,
+            vmax=vmax
         )
 
         self.map_ax.set_title("2D Map View (TA Mean)")
@@ -472,8 +609,6 @@ class PsTAAnalysisApp(tk.Tk):
 
         # Redraw the canvas
         self.canvas_tab2.draw()
-
-
             
     def background_correction(self):
         """
@@ -639,8 +774,7 @@ class PsTAAnalysisApp(tk.Tk):
             
         except Exception as e:
             messagebox.showerror("MATLAB Error", f"Could not refresh dat from MATLAB workspace: {e}")
-
-
+            
     def on_closing(self):
         if messagebox.askokcancel("Quit", "Do you want to quit?"):
             try:
