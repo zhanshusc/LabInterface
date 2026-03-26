@@ -19,6 +19,26 @@ import threading
 # implement min and max fitting for the heatmap where any value above the maximum or below the minimum becomes it.
 # Ideally use the bar on the heatmap  
 
+#Background correction over wrote dispersion correction ->
+#1. Background correct first
+# Don't have corrections affect original 
+
+# 03/26 1. Call functions from new matlab class
+# 2. Wavelength to energy space - Note: When you go from energy to wavelength for absorption it does not matter, but for counts you need apply a jacobian. 
+##Low prio Getting the basics right -> Anyything that can be seen as a historgam florescence and phosphoflorescence needs adjustments 
+# 1 - 10% excitation fraction 
+# 3. Plot the ground state spectrum, the florescnece as well 
+
+# Time-Domain is actually spectral slices -> Pick range + plot ground state and florescence 
+# Spectral slices average between some range of delays 1 dropdown menu on Time(ps), comma to implement table for averaging ranges of times
+### Table: top is top bounds, bottom is bottom bounds 
+# Wavelength-Domain is Kinetics trace 
+
+# Normalization -> kinetics traces point divided by max possible val 
+# waterfall: shift apart the different spectral slices 
+# Compare across objects on the same graph (time traces: solvent vs experiment)
+# Ideally in slices and traces have both the option to analyze raw and preprocessed 
+
 class PsTAAnalysisApp(tk.Tk):
     """
     A Python tkinter application replicating the psTA Analysis Suite layout
@@ -27,11 +47,11 @@ class PsTAAnalysisApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        # --- Main App Window Setup ---
+        # Main App Window Setup
         self.title("psTA Analysis Suite (Python)")
         self.geometry("1200x700")
         
-        # --- Main Grid Layout (3 Columns) ---
+        # Main Grid Layout (3 Columns)
         # Configure the root window's grid
         # Column 0: Left Panel (weight 1)
         self.grid_columnconfigure(0, weight=1, minsize=250) 
@@ -44,7 +64,7 @@ class PsTAAnalysisApp(tk.Tk):
         # Row 1: Status Bar
         self.grid_rowconfigure(1, weight=0)
 
-        # --- Create the Three Major Panels ---
+        # Create the Three Major Panels
         # We use ttk.Frame for a modern look
         self.left_panel = ttk.Frame(self, padding="10")
         self.middle_panel = ttk.Frame(self, padding="10")
@@ -55,15 +75,15 @@ class PsTAAnalysisApp(tk.Tk):
         self.middle_panel.grid(row=0, column=1, sticky="nsew")
         self.right_panel.grid(row=0, column=2, sticky="nsew")
 
-        # --- Populate Each Panel ---
+        # Populate Each Panel 
         self._create_left_panel()
         self._create_middle_panel()
         self._create_right_panel()
 
-        # --- Bottom Status Bar ---
+        # Bottom Status Bar 
         self._create_status_bar()
 
-        # --- Data Containers ---
+        # Data Containers 
         # Data is the container for the primary data - ie experiment being analzyed 
         # data 2 is a place holder for TCSPC for future use
         # 1 set of wavelength and times place holder for now, if need be duplica
@@ -72,7 +92,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.wavelength = None
         self.times = None
 
-        # --- Matlab Environment Start ---
+        # Matlab Environment Start
         self.eng = matlab.engine.start_matlab()
 
         # Add path to MATLAB script
@@ -86,7 +106,7 @@ class PsTAAnalysisApp(tk.Tk):
         """Populates the Left Panel (Data Control & Processing)"""
         frame = self.left_panel
         
-        # --- Section: Data I/O ---
+        # Section: Data I/O 
         data_io_frame = ttk.LabelFrame(frame, text="Data I/O", padding="10")
         data_io_frame.pack(fill='x', pady=5)
 
@@ -109,7 +129,7 @@ class PsTAAnalysisApp(tk.Tk):
             variable=self.combine_zeros_var
         ).pack(fill='x', pady=5)
 
-        # --- Section: Preprocessing ---
+        #  Preprocessing 
         preproc_frame = ttk.LabelFrame(frame, text="Preprocessing", padding="10")
         preproc_frame.pack(fill='x', pady=5)
 
@@ -122,7 +142,7 @@ class PsTAAnalysisApp(tk.Tk):
             preproc_frame, text="Dispersion Correction", command=self.dispersion_correction
         ).pack(fill='x', pady=2)
 
-        # --- Sub-section: Outlier Removal ---
+        # Sub-section: Outlier Removal
         outlier_frame = ttk.LabelFrame(preproc_frame, text="Outlier Removal", padding="10")
         outlier_frame.pack(fill='x', pady=10)
         
@@ -148,7 +168,7 @@ class PsTAAnalysisApp(tk.Tk):
         ttk.Button(
             outlier_frame, text="Clean Outliers", command=self.placeholder_command
         ).pack(fill='x', pady=5)
-        # --- End Outlier Sub-section ---
+        # End Outlier Sub-section
 
         ttk.Button(
             preproc_frame, text="Recompute Average", command=self.placeholder_command
@@ -162,7 +182,7 @@ class PsTAAnalysisApp(tk.Tk):
         # Create the Tab Group (Notebook)
         tab_control = ttk.Notebook(frame)
         
-        # --- Create Tab Frames ---
+        # Tab Frames
         tab1 = ttk.Frame(tab_control, padding="10")
         tab2 = ttk.Frame(tab_control, padding="10")
         tab3 = ttk.Frame(tab_control, padding="10")
@@ -177,7 +197,7 @@ class PsTAAnalysisApp(tk.Tk):
         # Make the notebook fill the middle panel
         tab_control.pack(expand=1, fill='both')
 
-        # --- Populate Tab 1: Time-Domain Traces ---
+        # Populate Tab 1: Time-Domain Traces 
         tab1_controls = ttk.Frame(tab1)
         tab1_controls.pack(fill='x', pady=5)
 
@@ -211,7 +231,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.canvas_time.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
 
-        # --- Populate Tab 2: Wavelength-domain Traces ---
+        # Populate Tab 2: Wavelength-domain Traces
         # Add controls
         tab4_controls = ttk.Frame(tab4)
         tab4_controls.pack(fill='x', pady=5)
@@ -246,7 +266,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.canvas_wl.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
 
-        # --- Populate Tab 3: 2D Map View ---
+        # Populate Tab 3: 2D Map View
     
         tab2_controls = ttk.Frame(tab2)
         tab2_controls.pack(fill='x', pady=5)
@@ -288,7 +308,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.canvas_tab2.draw()
         self.canvas_tab2.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # --- Populate Tab 4: Residuals / Cleaned Comparison ---
+        # Populate Tab 4: Residuals / Cleaned Comparison
         # This tab will have two plots, so we use a main frame
         tab3_main_frame = ttk.Frame(tab3)
         tab3_main_frame.pack(fill=tk.BOTH, expand=True)
@@ -326,7 +346,7 @@ class PsTAAnalysisApp(tk.Tk):
         """Populates the Right Panel (Analysis & Export)"""
         frame = self.right_panel
 
-        # --- Section: Kinetic Fitting ---
+        # Section: Kinetic Fitting
         fit_frame = ttk.LabelFrame(frame, text="Kinetic Fitting", padding="10")
         fit_frame.pack(fill='x', pady=5)
         
@@ -364,7 +384,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.results_text.config(state='disabled', bg='#f0f0f0') # Read-only
         self.results_text.pack(fill='x', expand=True, pady=5)
         
-        # --- Section: Export Options ---
+        # Section: Export Options 
         export_frame = ttk.LabelFrame(frame, text="Export Options", padding="10")
         export_frame.pack(fill='x', pady=5, side='bottom')
 
