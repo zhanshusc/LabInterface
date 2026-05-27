@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import matlab.engine
 import threading
+from pathlib import Path
 
 # Using messagebox for placeholders
 
@@ -96,6 +97,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.eng = matlab.engine.start_matlab()
         # Add path to MATLAB script
         self.eng.addpath(r"./TAExperiment.m", nargout=0)
+        self.eng.addpath(r"./SolitonTAExperimentSelfContained.m")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.map_colorbar = None
 
@@ -446,7 +448,7 @@ class PsTAAnalysisApp(tk.Tk):
         if not file_path:
             return
 
-        self.status_label.config(text="Status: Running MATLAB analysis...")
+        self.status_label.config(text="Status: Running analysis...")
         self.update_idletasks()
 
         try:
@@ -457,25 +459,92 @@ class PsTAAnalysisApp(tk.Tk):
             self.status_label.config(text="Status: Error during analysis.")
 
     def run_matlab_analysis(self, data_file):
+        ext = Path(data_file).suffix.lower()
 
-        # Run MATLAB function
+        if ext == ".json" or ext == "":
+            self._run_original_matlab_pipeline(data_file)
+
+        elif ext == ".txt" or ext == ".csv":
+            self._run_new_txt_pipeline(data_file)
+
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
+        
+    def _run_original_matlab_pipeline(self, data_file):
         dat = self.eng.TAExperiment(data_file)
-        self.eng.workspace['dat'] = dat 
-        # Extract arrays
+
+        self.eng.workspace['dat'] = dat
+
         arr = np.array(self.eng.eval("dat.TAMean"))
         times = np.array(self.eng.eval("dat.times")).flatten()
         wavelengths = np.array(self.eng.eval("dat.wavelengths")).flatten()
 
-        # Store for later use
         self.data = arr
         self.times = times
         self.wavelength = wavelengths
 
-        # Populate entry fields with data min/max as defaults
         self.map_vmin_var.set(f"{arr.min():.4g}")
         self.map_vmax_var.set(f"{arr.max():.4g}")
 
-        # Update the 2D map
+        self.update_2d_map()
+
+    def _infer_energy_axis_from_txt(self, data_file, e_min=1.5, e_max=3.5):
+        """
+        Infer the number of probe-energy channels from the TXT file and build
+        a matching energy axis.
+        """
+        # Read only the first scan file to determine shape
+        df = pd.read_csv(
+            data_file,
+            sep=None,          # auto-detect delimiter
+            engine="python",
+            header=None
+        )
+
+        # MATLAB readmatrix will see the first column as time and the rest as data
+        n_pixels = df.shape[1] - 1
+        if n_pixels <= 0:
+            raise ValueError(f"Could not infer a valid energy axis from {data_file}")
+
+        energy_axis = np.linspace(e_min, e_max, n_pixels)
+        return energy_axis
+    def _run_new_txt_pipeline(self, data_file):
+        p = Path(data_file)
+
+        folder_path = str(p.parent)
+        file_name = p.name
+
+        # Make sure MATLAB sees your class file location
+        self.eng.addpath(folder_path, nargout=0)
+
+        # Create the MATLAB object
+        dat = self.eng.SolitonTAExperimentSelfContained(folder_path, file_name, 1)
+
+        # Example values: replace with GUI inputs or defaults
+        energy_axis = self._infer_energy_axis_from_txt(data_file, e_min=1.5, e_max=3.5)
+        energy_axis_ml = matlab.double(energy_axis.tolist())
+        is_mirrored = False
+        upper_bound = -1.5 
+
+        chirp_coeffs = matlab.double([0, 0, 0, 0, 0])
+
+        self.eng.mainSoliton_SC(dat, energy_axis, is_mirrored, upper_bound,
+                                'chirpCorrectionCoefficients', chirp_coeffs,
+                                nargout=0)
+
+        self.eng.workspace['dat'] = dat
+
+        arr = np.array(self.eng.eval("dat.TAMeanSortedBackgroundSub_CC"))
+        times = np.array(self.eng.eval("dat.timesSorted_CC")).flatten()
+        wavelengths = np.array(self.eng.eval("dat.energyAxis_CC")).flatten()
+
+        self.data = arr
+        self.times = times
+        self.wavelength = wavelengths
+
+        self.map_vmin_var.set(f"{arr.min():.4g}")
+        self.map_vmax_var.set(f"{arr.max():.4g}")
+
         self.update_2d_map()
 
     def _parse_slice_values(self, text: str, label: str):
@@ -603,7 +672,7 @@ class PsTAAnalysisApp(tk.Tk):
         
         # Plot data
         im = self.map_ax.imshow(
-            self.data,
+            display_data,
             aspect='auto',
             origin='lower',
             extent=[
