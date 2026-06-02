@@ -93,6 +93,11 @@ class PsTAAnalysisApp(tk.Tk):
         self.wavelength = None
         self.times = None
 
+        self.raw_data = None
+        self.proc_data = None
+        self.raw_dat = None
+        self.proc_dat = None
+
         # Matlab Environment Start
         self.eng = matlab.engine.start_matlab()
         # Add path to MATLAB script
@@ -202,19 +207,30 @@ class PsTAAnalysisApp(tk.Tk):
         tab1_controls = ttk.Frame(tab1)
         tab1_controls.pack(fill='x', pady=5)
 
-        ttk.Label(tab1_controls, text="Times (ps), comma-separated:").pack(side='left', padx=5)
+        ttk.Label(tab1_controls, text="Times (ps), comma-separated:").grid(row=0, column=0, sticky='w', padx=5, pady=2)
         self.time_slice_var = tk.StringVar(value="0.1, 1, 10, 100")
-        ttk.Entry(tab1_controls, textvariable=self.time_slice_var, width=35).pack(side='left', padx=5)
-        ttk.Button(
-            tab1_controls, text="Plot", command=self.plot_time_slices
-        ).pack(side='left', padx=2)
+        ttk.Entry(tab1_controls, textvariable=self.time_slice_var, width=35).grid(row=0, column=1, sticky='w', padx=5, pady=2)
+        ttk.Button(tab1_controls, text="Plot", command=self.plot_time_slices).grid(row=0, column=2, padx=2, pady=2)
         ttk.Button(
             tab1_controls, text="Clear",
             command=lambda: self._clear_slice_axis(
                 self.ax_time, self.canvas_time,
                 "Wavelength (nm)", "ΔA", "Time-Domain Traces"
             )
-        ).pack(side='left', padx=2)
+        ).grid(row=0, column=3, padx=2, pady=2)
+
+        # New wavelength range controls for the time-domain traces plot only
+        ttk.Label(tab1_controls, text="Visible wavelength range (nm):").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        self.time_trace_wl_range_var = tk.StringVar(value="")
+        ttk.Entry(tab1_controls, textvariable=self.time_trace_wl_range_var, width=35).grid(row=1, column=1, sticky='w', padx=5, pady=2)
+        ttk.Button(tab1_controls, text="Apply Range", command=self.apply_time_trace_wavelength_range).grid(row=1, column=2, padx=2, pady=2)
+        ttk.Button(tab1_controls, text="Reset Range", command=self.reset_time_trace_wavelength_range).grid(row=1, column=3, padx=2, pady=2)
+
+        # Placeholder buttons (not implemented yet)
+        ttk.Button(tab1_controls, text="Plot Ground State", command=self.placeholder_command).grid(row=2, column=0, padx=5, pady=6, sticky='w')
+        ttk.Button(tab1_controls, text="Plot Fluorescence", command=self.placeholder_command).grid(row=2, column=1, padx=5, pady=6, sticky='w')
+
+        tab1_controls.grid_columnconfigure(1, weight=1)
 
         self.fig_time = Figure(figsize=(5, 4), dpi=100)
         self.ax_time = self.fig_time.add_subplot(111)
@@ -470,16 +486,32 @@ class PsTAAnalysisApp(tk.Tk):
         else:
             raise ValueError(f"Unsupported file type: {ext}")
         
+
+    def _sync_working_dat_to_matlab(self):
+        """Push the current working MATLAB object into the MATLAB workspace."""
+        if self.proc_dat is None:
+            self.proc_dat = self.raw_dat
+        if self.proc_dat is None:
+            raise ValueError("No data loaded.")
+        self.eng.workspace['dat'] = self.proc_dat
+
+
     def _run_original_matlab_pipeline(self, data_file):
         dat = self.eng.TAExperiment(data_file)
 
+        # Keep untouched + working copies
+        self.raw_dat = dat
+        self.proc_dat = dat
         self.eng.workspace['dat'] = dat
 
         arr = np.array(self.eng.eval("dat.TAMean"))
         times = np.array(self.eng.eval("dat.times")).flatten()
         wavelengths = np.array(self.eng.eval("dat.wavelengths")).flatten()
 
-        self.data = arr
+        self.raw_data = arr.copy()
+        self.proc_data = arr.copy()
+
+        self.data = self.proc_data
         self.times = times
         self.wavelength = wavelengths
 
@@ -511,26 +543,28 @@ class PsTAAnalysisApp(tk.Tk):
     def _run_new_txt_pipeline(self, data_file):
         p = Path(data_file)
 
-        folder_path = str(p.parent)
+        folder_path = str(p.parent) + "//"
         file_name = p.name
 
-        # Make sure MATLAB sees your class file location
         self.eng.addpath(folder_path, nargout=0)
 
-        # Create the MATLAB object
         dat = self.eng.SolitonTAExperimentSelfContained(folder_path, file_name, 1)
 
-        # Example values: replace with GUI inputs or defaults
-        energy_axis = self._infer_energy_axis_from_txt(data_file, e_min=1.5, e_max=3.5)
-        energy_axis_ml = matlab.double(energy_axis.tolist())
-        is_mirrored = False
-        upper_bound = -1.5 
+        # Keep untouched + working copies
+        self.raw_dat = dat
+        self.proc_dat = dat
+        self.eng.workspace['dat'] = dat
 
+        energy_axis = self._infer_energy_axis_from_txt(data_file, e_min=1.5, e_max=3.5)
+        is_mirrored = False
+        upper_bound = -1.5
         chirp_coeffs = matlab.double([0, 0, 0, 0, 0])
 
-        self.eng.mainSoliton_SC(dat, energy_axis, is_mirrored, upper_bound,
-                                'chirpCorrectionCoefficients', chirp_coeffs,
-                                nargout=0)
+        self.eng.mainSoliton_SC(
+            dat, energy_axis, is_mirrored, upper_bound,
+            'chirpCorrectionCoefficients', chirp_coeffs,
+            nargout=0
+        )
 
         self.eng.workspace['dat'] = dat
 
@@ -538,7 +572,10 @@ class PsTAAnalysisApp(tk.Tk):
         times = np.array(self.eng.eval("dat.timesSorted_CC")).flatten()
         wavelengths = np.array(self.eng.eval("dat.energyAxis_CC")).flatten()
 
-        self.data = arr
+        self.raw_data = arr.copy()
+        self.proc_data = arr.copy()
+
+        self.data = self.proc_data
         self.times = times
         self.wavelength = wavelengths
 
@@ -562,36 +599,80 @@ class PsTAAnalysisApp(tk.Tk):
                 f'Example: "0.1, 1, 10, 100"'
             )
             return None
+        
+    def _autoscale_time_trace_yaxis(self, wl_range):
+        """Autoscale the time-trace y-axis using only data inside the wavelength window."""
+        if self.data is None or self.wavelength is None:
+            return
+
+        wl_min, wl_max = wl_range
+        mask = (self.wavelength >= wl_min) & (self.wavelength <= wl_max)
+        if not np.any(mask):
+            return
+
+        visible_data = self.data[:, mask]
+        if visible_data.size == 0:
+            return
+
+        ymin = np.nanmin(visible_data)
+        ymax = np.nanmax(visible_data)
+
+        if np.isfinite(ymin) and np.isfinite(ymax):
+            if ymin == ymax:
+                pad = abs(ymin) * 0.05 if ymin != 0 else 1e-6
+            else:
+                pad = 0.05 * (ymax - ymin)
+            self.ax_time.set_ylim(ymin - pad, ymax + pad)
 
     def plot_time_slices(self):
         """Plot ΔA vs wavelength for each requested time value (Tab 1)."""
         if not hasattr(self, 'data') or self.data is None:
             messagebox.showwarning("No Data", "Load a data file first.")
             return
-    
+
         targets = self._parse_slice_values(self.time_slice_var.get(), "time")
         if targets is None:
             return
-    
+
         self.ax_time.cla()
         self.ax_time.set_title("Time-Domain Traces")
         self.ax_time.set_xlabel("Wavelength (nm)")
         self.ax_time.set_ylabel("ΔA")
         self.ax_time.grid(True)
         self.ax_time.axhline(0, color='gray', lw=0.8, ls='--')
-    
+
         cmap = plt.get_cmap("plasma")
         colors = [cmap(i / max(len(targets) - 1, 1)) for i in range(len(targets))]
-    
+
+        wl_range = None
+        if getattr(self, "time_trace_wl_range_var", None) is not None:
+            range_text = self.time_trace_wl_range_var.get().strip()
+            if range_text:
+                wl_range = self._parse_range_values(range_text, "wavelength")
+
+        if wl_range is not None:
+            wl_min, wl_max = wl_range
+            plot_mask = (self.wavelength >= wl_min) & (self.wavelength <= wl_max)
+        else:
+            plot_mask = slice(None)
+
         for t_req, color in zip(targets, colors):
             idx = int(np.argmin(np.abs(self.times - t_req)))
             t_actual = self.times[idx]
             self.ax_time.plot(
-                self.wavelength, self.data[idx, :],
+                self.wavelength[plot_mask], self.data[idx, :][plot_mask],
                 color=color, lw=1.5, label=f"{t_actual:.3g} ps"
             )
-    
+
         self.ax_time.legend(fontsize=8, framealpha=0.7)
+
+        if wl_range is not None:
+            self.ax_time.set_xlim(*wl_range)
+            self._autoscale_time_trace_yaxis(wl_range)
+        else:
+            self.ax_time.set_xlim(self.wavelength.min(), self.wavelength.max())
+            self._autoscale_time_trace_yaxis((self.wavelength.min(), self.wavelength.max()))
+
         self.fig_time.tight_layout()
         self.canvas_time.draw()
  
@@ -627,6 +708,54 @@ class PsTAAnalysisApp(tk.Tk):
         self.ax_wl.legend(fontsize=8, framealpha=0.7)
         self.fig_wl.tight_layout()
         self.canvas_wl.draw()
+
+    def _parse_range_values(self, text: str, label: str):
+        """Parse a comma-separated pair of floats into (low, high)."""
+        try:
+            vals = [float(v.strip()) for v in text.split(",") if v.strip()]
+            if len(vals) != 2:
+                raise ValueError("Expected exactly two numbers.")
+            low, high = vals
+            if low > high:
+                low, high = high, low
+            return low, high
+        except ValueError:
+            messagebox.showerror(
+                "Input Error",
+                f"Invalid {label} range — enter two comma-separated numbers.\n"
+                f'Example: "450, 700"'
+            )
+            return None
+
+
+    def apply_time_trace_wavelength_range(self):
+        """Limit the visible wavelength range in the time-domain traces plot only."""
+        if not hasattr(self, 'data') or self.data is None:
+            messagebox.showwarning("No Data", "Load a data file first.")
+            return
+
+        parsed = self._parse_range_values(self.time_trace_wl_range_var.get(), "wavelength")
+        if parsed is None:
+            return
+
+        wl_min, wl_max = parsed
+        self.ax_time.set_xlim(wl_min, wl_max)
+        self.fig_time.tight_layout()
+        self.canvas_time.draw()
+        self.status_label.config(
+            text=f"Status: Time-trace wavelength view set to {wl_min:g} - {wl_max:g} nm."
+        )
+
+
+    def reset_time_trace_wavelength_range(self):
+        """Reset the time-domain traces x-axis to the full wavelength span."""
+        if self.wavelength is None:
+            return
+        self.time_trace_wl_range_var.set(f"{self.wavelength.min():.4g}, {self.wavelength.max():.4g}")
+        self.ax_time.set_xlim(self.wavelength.min(), self.wavelength.max())
+        self.fig_time.tight_layout()
+        self.canvas_time.draw()
+        self.status_label.config(text="Status: Time-trace wavelength view reset.")
     
     
     def _clear_slice_axis(self, ax, canvas, xlabel, ylabel, title):
@@ -700,46 +829,48 @@ class PsTAAnalysisApp(tk.Tk):
             
     def background_correction(self):
         """
-        Ask user for upper bound after button press,
-        then call subtractTABackground(dat, upper_bound)
+        Apply background correction to the current working copy.
         """
-
-        if self.data is None:
+        if self.raw_dat is None:
             messagebox.showwarning("No Data", "Load data before running background correction.")
             return
 
-        # Ask user for float input
         upper_val = simpledialog.askfloat(
             "Background Correction",
             "Enter upper bound for background subtraction:",
             parent=self
         )
-        # User pressed cancel
         if upper_val is None:
             return
-        self.status_label.config(text=f"Status: Running background correction (upper={upper_val})...")
+
+        self.status_label.config(
+            text=f"Status: Running background correction (upper={upper_val})..."
+        )
         self.update_idletasks()
+
         try:
-            # Get current MATLAB dat
-            dat = self.eng.workspace['dat']
-            # If MATLAB function RETURNS updated dat
-            self.eng.subtractTABackground(dat, float(upper_val), nargout=0)
-            corrected_dat = self.eng.workspace['dat']
+            # Start from the current working copy
+            self._sync_working_dat_to_matlab()
 
-            # Store back in workspace
-            self.eng.workspace['dat'] = corrected_dat
+            # IMPORTANT: assign the result back to dat in MATLAB
+            self.eng.eval(
+                f"subtractTABackground(dat, {float(upper_val)});",
+                nargout=0
+            )
 
-            # Extract updated arrays
+            # Save corrected working copy
+            self.proc_dat = self.eng.workspace['dat']
+
+            # Refresh arrays from the corrected working copy
             arr = np.array(self.eng.eval("dat.TAMean"))
             times = np.array(self.eng.eval("dat.times")).flatten()
             wavelengths = np.array(self.eng.eval("dat.wavelengths")).flatten()
 
-            # Update Python-side data
-            self.data = arr
+            self.proc_data = arr.copy()
+            self.data = self.proc_data
             self.times = times
             self.wavelength = wavelengths
 
-            # Refresh 2D map
             self.update_2d_map()
 
             self.status_label.config(text="Status: Background correction complete.")
@@ -747,7 +878,7 @@ class PsTAAnalysisApp(tk.Tk):
 
         except Exception as e:
             messagebox.showerror("MATLAB Error", str(e))
-            self.status_label.config(text=f"Status: Error during background correction.{e}")
+            self.status_label.config(text=f"Status: Error during background correction. {e}")
 
     def dispersion_correction(self):
         """Show options for dispersion correction."""
@@ -774,13 +905,15 @@ class PsTAAnalysisApp(tk.Tk):
         chooser.bind("<Escape>", lambda e: chooser.destroy())
 
     def _call_matlab_correctdispersion(self):
-        """Call dat.correctdispersion() or correctdispersion(dat) in MATLAB."""
+        """Call dispersion correction on the current working copy."""
         self._update_status("Launching MATLAB dispersion-correction popup...")
         try:
-            # Let MATLAB handle the method vs function resolution natively
+            self._sync_working_dat_to_matlab()
+
             cmd = "dat.correctDispersion();"
             self.eng.eval(cmd, nargout=0)
-            
+
+            self.proc_dat = self.eng.workspace['dat']
             self._refresh_dat_from_matlab("Dispersion correction (MATLAB) finished.")
         except Exception as e:
             messagebox.showerror("MATLAB Error", f"Error while calling correctdispersion:\n{e}")
@@ -812,7 +945,6 @@ class PsTAAnalysisApp(tk.Tk):
         def on_ok(event=None):
             txt = entry_var.get().strip()
             try:
-                # Parse numbers: accept commas and/or spaces
                 parts = [p for p in txt.replace(",", " ").split() if p]
                 if len(parts) != 3:
                     raise ValueError("Please enter exactly 3 numbers.")
@@ -822,12 +954,18 @@ class PsTAAnalysisApp(tk.Tk):
                 return
 
             dlg.destroy()
-            
-            # Apply to MATLAB
+
             self._update_status("Applying external dispersion correction...")
             try:
+                self._sync_working_dat_to_matlab()
+
                 vec_str = f"[{' '.join(map(str, coeffs))}]"
-                self.eng.eval(f"applyExternalDispersionCorrection(dat, {vec_str});", nargout=0)
+                self.eng.eval(
+                    f"applyExternalDispersionCorrection(dat, {vec_str});",
+                    nargout=0
+                )
+
+                self.proc_dat = self.eng.workspace['dat']
                 self._refresh_dat_from_matlab("External dispersion correction applied.")
             except Exception as e:
                 messagebox.showerror("MATLAB Error", f"Error applying external correction:\n{e}")
@@ -849,19 +987,25 @@ class PsTAAnalysisApp(tk.Tk):
     def _refresh_dat_from_matlab(self, success_msg):
         """Pull dat arrays from MATLAB workspace and update Python state."""
         try:
+            self.proc_dat = self.eng.workspace['dat']
+
             self.data = np.array(self.eng.eval("dat.TAMean"))
             self.times = np.array(self.eng.eval("dat.times")).flatten()
             self.wavelength = np.array(self.eng.eval("dat.wavelengths")).flatten()
 
-            # Refresh map if the method exists
+            self.proc_data = self.data.copy()
+
             if hasattr(self, 'update_2d_map'):
                 self.update_2d_map()
-                
+
             self._update_status(success_msg)
             messagebox.showinfo("Done", success_msg)
-            
+
         except Exception as e:
-            messagebox.showerror("MATLAB Error", f"Could not refresh dat from MATLAB workspace: {e}")
+            messagebox.showerror(
+                "MATLAB Error",
+                f"Could not refresh dat from MATLAB workspace: {e}"
+            )
             
     def on_closing(self):
         if messagebox.askokcancel("Quit", "Do you want to quit?"):

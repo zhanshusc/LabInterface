@@ -217,6 +217,36 @@ classdef SolitonTAExperimentSelfContained < handle
             obj.timesSorted=t;
             % clear tempcube, a, b, c,t,sortedUnmirroredTACube,unmirroredTimes,unmirroredCube;
         end
+        function cmap = divergingBlueWhiteRed_SC(~, n)
+            % MATLAB-only diverging colormap for TA plots
+            % Blue -> White -> Red
+            if nargin < 2 || isempty(n)
+                n = 256;
+            end
+
+            if mod(n,2) ~= 0
+                n = n + 1; % keep halves even
+            end
+
+            n1 = n/2;
+            n2 = n/2;
+
+            blue  = [33 102 172] / 255;
+            white = [1 1 1];
+            red   = [178 24 43] / 255;
+
+            cmap1 = [ ...
+                linspace(blue(1),  white(1), n1)' ...
+                linspace(blue(2),  white(2), n1)' ...
+                linspace(blue(3),  white(3), n1)' ];
+
+            cmap2 = [ ...
+                linspace(white(1), red(1), n2)' ...
+                linspace(white(2), red(2), n2)' ...
+                linspace(white(3), red(3), n2)' ];
+
+            cmap = [cmap1; cmap2];
+        end
         function backgroundSubtractSoliton_SC(obj, upperBoundTime)
             [UBT_idx,UBT_val]=obj.findNearestIV_SC(obj.timesSorted,upperBoundTime);
             backgroundAvg=mean(obj.TAMeanSorted(1:UBT_idx,:),1);
@@ -250,17 +280,13 @@ classdef SolitonTAExperimentSelfContained < handle
             if sum(CCcoeffs)==0
             % plot data
                 figure();
-                [~,h]=contourf(CCenergyAx,newTimeAx(TimeInx(1):TimeInx(2)),data(TimeInx(1):TimeInx(2),:),100);set(h,'Linestyle','none');colormap(brewermap(100,'*RdBu'))
+                [~,h]=contourf(CCenergyAx,newTimeAx(TimeInx(1):TimeInx(2)),data(TimeInx(1):TimeInx(2),:),100);set(h,'Linestyle','none');colormap(turbo)
                 colorbar()
                 % % fixes white to zero
                 cmax = .002;%max(data1(TimeInx(1):TimeInx(2),:),[],'all');
                 cmin = -.002;%min(data1(TimeInx(1):TimeInx(2),:),[],'all');
                 xlim([300,1000]);
-                Bmap1 = brewermap(100,'*RdBu');
-                Bmap1 = Bmap1(1:50,:);
-                Bmap2 = brewermap(ceil(100*(-cmax/cmin)),'*RdBu');
-                Bmap2 = Bmap2(round(size(Bmap2,1)/2) :end,:);
-                colormap([Bmap1' Bmap2']');
+                colormap(obj.divergingBlueWhiteRed_SC(200));
                 clim([cmin cmax])
                 % User selects points
                 [x,y] = getpts;
@@ -303,7 +329,7 @@ classdef SolitonTAExperimentSelfContained < handle
             end
             
             chirpcorrdat = newmat;
-            figure;[h]=surf(energyAx,newTimeAx,chirpcorrdat,EdgeColor="none");set(h,'Linestyle','none');ylabel('t / ps');xlabel('Probe Energy /eV');title('Chirp Corrected');ylim([-1 1]);colormap(brewermap(200,'*RdBu'));
+            figure;[h]=surf(energyAx,newTimeAx,chirpcorrdat,EdgeColor="none");set(h,'Linestyle','none');ylabel('t / ps');xlabel('Probe Energy /eV');title('Chirp Corrected');ylim([-1 1]);colormap(obj.divergingBlueWhiteRed_SC(200));
             clim([-0.005,0.005]);colorbar();view(2);%xlim([1,6]);
             % TAdat_cc = chirpcorrdat;
             % t = newTimeAx;
@@ -320,7 +346,7 @@ classdef SolitonTAExperimentSelfContained < handle
         %     %METHOD1 Summary of this method goes here
         %     %   Detailed explanation goes here
         %     fig=figure();view(2);
-        %     colormap(brewermap([],'*RdBu'))
+        %     colormap(obj.divergingBlueWhiteRed_SC(200))
         %     contourf(obj.energyAxis,obj.times,obj.TAMean,200,'EdgeColor','none');
         %     clim([-0.005 0.005]);colorbar();fontsize(14,"points");
         %     xlabel("Probe Energy /eV");ylabel("Time Delay /ps");
@@ -331,7 +357,7 @@ classdef SolitonTAExperimentSelfContained < handle
             %METHOD1 Summary of this method goes here
             %   Detailed explanation goes here
             fig=figure();
-            colormap(brewermap([],'*RdBu'));
+            colormap(obj.divergingBlueWhiteRed_SC());
             surf(obj.energyAxis,obj.timesRaw,obj.TAMeanRaw,'EdgeColor','none');view(2);
             clim([-0.005 0.005]);colorbar();fontsize(14,"points");
             xlabel("Probe Energy /eV");ylabel("Time Delay /ps");
@@ -341,7 +367,7 @@ classdef SolitonTAExperimentSelfContained < handle
             %METHOD1 Summary of this method goes here
             %   Detailed explanation goes here
             fig=figure();
-            colormap(brewermap([],'*RdBu'));
+            colormap(obj.divergingBlueWhiteRed_SC());
             surf(obj.energyAxis,obj.timesRaw,obj.TACubeRaw(:,:,scanNum),'EdgeColor','none');view(2);
             clim([-0.005 0.005]);colorbar();fontsize(14,"points");
             xlabel("Probe Energy /eV");ylabel("Time Delay /ps");
@@ -351,7 +377,7 @@ classdef SolitonTAExperimentSelfContained < handle
             %METHOD1 Summary of this method goes here
             %   Detailed explanation goes here
             fig=figure();
-            colormap(brewermap([],'*RdBu'));
+            colormap(obj.divergingBlueWhiteRed_SC());
             surf(obj.energyAxis,obj.timesSorted_CC,obj.TAMeanSorted,'EdgeColor','none');view(2);
             clim([-0.005 0.005]);colorbar();fontsize(14,"points");
             xlabel("Probe Energy /eV");ylabel("Time Delay /ps");
@@ -361,7 +387,7 @@ classdef SolitonTAExperimentSelfContained < handle
             %METHOD1 Summary of this method goes here
             %   Detailed explanation goes here
             fig=figure();
-            colormap(brewermap([],'*RdBu'));
+            colormap(obj.divergingBlueWhiteRed_SC());
             surf(obj.energyAxis,obj.timesSorted_CC,obj.TAMeanSortedBackgroundSub_CC,'EdgeColor','none');view(2);
             clim([-0.005 0.005]);colorbar();fontsize(14,"points");
             xlabel("Probe Energy /eV");ylabel("Time Delay /ps");
