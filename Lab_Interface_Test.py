@@ -47,9 +47,33 @@ from pathlib import Path
 # After the buttons have been clicked have a box for show or don't show for fluorescece and ground state
 
 # For wavelength average within ranges to smooth it out, binning 
+# binning should be optional for both spectral and time 
+# select ranges of time
+# Ranges for the 2D map view 
+# Remove pubchem search 
+# And declasssify
 # Comma separated lists or a table that averages wavelength ranges instead of discrete individual wavelengths. 
-# [Range , Range] average to obtain value at time. 
+# [Range , Range] average to obtain value at time.
 
+
+# Packaging the software to be readily sendable. 
+# .exe is ideal 
+
+# TCSPC
+# .Sdt files
+# https://github.com/cgohlke/sdtfile/
+# https://github.com/glotaran/pyglotaran
+# Instrument response function 
+# Convolution of IRF(instrument response function ) with exp^-t/lambda 
+# scaling factor exists 
+# Select 1 2 or 3 exponentials
+# Linear vs log scaling linear on x log on y 
+
+
+# 1. Cut pubchem search out
+# 2. Implement new interface features
+# 3. TCSPC functionality reconstruction via python
+# 4. Later Matlab translated into python 
 class PsTAAnalysisApp(tk.Tk):
     """
     A Python tkinter application replicating the psTA Analysis Suite layout
