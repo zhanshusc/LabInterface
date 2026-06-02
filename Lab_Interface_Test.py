@@ -40,6 +40,16 @@ from pathlib import Path
 # Compare across objects on the same graph (time traces: solvent vs experiment)
 # Ideally in slices and traces have both the option to analyze raw and preprocessed 
 
+
+
+# When plotting Ground state and Fluorescence have the user input scaling factor
+# Plot: scaling factor * absorbance at any given wavelength. 
+# After the buttons have been clicked have a box for show or don't show for fluorescece and ground state
+
+# For wavelength average within ranges to smooth it out, binning 
+# Comma separated lists or a table that averages wavelength ranges instead of discrete individual wavelengths. 
+# [Range , Range] average to obtain value at time. 
+
 class PsTAAnalysisApp(tk.Tk):
     """
     A Python tkinter application replicating the psTA Analysis Suite layout
