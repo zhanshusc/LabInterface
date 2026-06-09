@@ -12,17 +12,9 @@ import matlab.engine
 import threading
 from pathlib import Path
 
-# Using messagebox for placeholders
-
-# Import Matplotlib libraries for embedding plots
-
 # Wavelength and time slices based on comma separated list of values
 # implement min and max fitting for the heatmap where any value above the maximum or below the minimum becomes it.
 # Ideally use the bar on the heatmap  
-
-#Background correction over wrote dispersion correction ->
-#1. Background correct first
-# Don't have corrections affect original 
 
 # 03/26 1. Call functions from new matlab class
 # 2. Wavelength to energy space - Note: When you go from energy to wavelength for absorption it does not matter, but for counts you need apply a jacobian. 
@@ -135,8 +127,8 @@ class PsTAAnalysisApp(tk.Tk):
         # Matlab Environment Start
         self.eng = matlab.engine.start_matlab()
         # Add path to MATLAB script
-        self.eng.addpath(r"./TAExperiment.m", nargout=0)
-        self.eng.addpath(r"./SolitonTAExperimentSelfContained.m")
+        self.eng.addpath(r"./MatlabItems/TAExperiment.m", nargout=0)
+        self.eng.addpath(r"./MatlabItems/SolitonTAExperimentSelfContained.m")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.map_colorbar = None
 
