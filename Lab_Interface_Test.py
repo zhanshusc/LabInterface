@@ -124,11 +124,21 @@ class PsTAAnalysisApp(tk.Tk):
         self.raw_dat = None
         self.proc_dat = None
 
+
+        self.pipeline_type = None 
+
+        # Optional spectral overlays shown on the Time-Domain Traces tab.
+        # Each overlay stores the source CSV, scale factor, plotted line, and visibility state.
+        self.time_trace_overlays = {
+            "ground_state": {"label": "Ground State", "line": None, "data": None, "scale": None},
+            "fluorescence": {"label": "Fluorescence", "line": None, "data": None, "scale": None},
+        }
+
         # Matlab Environment Start
         self.eng = matlab.engine.start_matlab()
         # Add path to MATLAB script
-        self.eng.addpath(r"./MatlabItems/TAExperiment.m", nargout=0)
-        self.eng.addpath(r"./MatlabItems/SolitonTAExperimentSelfContained.m")
+        self.eng.addpath(r"MatlabItems", nargout=0)
+        self.eng.addpath(r"MatlabItems", nargout=0)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.map_colorbar = None
 
@@ -252,9 +262,33 @@ class PsTAAnalysisApp(tk.Tk):
         ttk.Button(tab1_controls, text="Apply Range", command=self.apply_time_trace_wavelength_range).grid(row=1, column=2, padx=2, pady=2)
         ttk.Button(tab1_controls, text="Reset Range", command=self.reset_time_trace_wavelength_range).grid(row=1, column=3, padx=2, pady=2)
 
-        # Placeholder buttons (not implemented yet)
-        ttk.Button(tab1_controls, text="Plot Ground State", command=self.placeholder_command).grid(row=2, column=0, padx=5, pady=6, sticky='w')
-        ttk.Button(tab1_controls, text="Plot Fluorescence", command=self.placeholder_command).grid(row=2, column=1, padx=5, pady=6, sticky='w')
+        # Optional CSV overlays for ground-state and fluorescence spectra.
+        # CSV headers expected: Wavelength (nm), Absorbance (AU), optional Std.Dev.
+        ttk.Button(
+            tab1_controls, text="Plot Ground State",
+            command=lambda: self.plot_scaled_absorbance_overlay("ground_state")
+        ).grid(row=2, column=0, padx=5, pady=6, sticky='w')
+        ttk.Button(
+            tab1_controls, text="Plot Fluorescence",
+            command=lambda: self.plot_scaled_absorbance_overlay("fluorescence")
+        ).grid(row=2, column=1, padx=5, pady=6, sticky='w')
+
+        self.ground_state_visible_var = tk.BooleanVar(value=True)
+        self.fluorescence_visible_var = tk.BooleanVar(value=True)
+        self.ground_state_toggle = ttk.Checkbutton(
+            tab1_controls, text="Show Ground State",
+            variable=self.ground_state_visible_var,
+            command=lambda: self.toggle_time_trace_overlay("ground_state"),
+            state="disabled"
+        )
+        self.ground_state_toggle.grid(row=3, column=0, padx=5, pady=2, sticky='w')
+        self.fluorescence_toggle = ttk.Checkbutton(
+            tab1_controls, text="Show Fluorescence",
+            variable=self.fluorescence_visible_var,
+            command=lambda: self.toggle_time_trace_overlay("fluorescence"),
+            state="disabled"
+        )
+        self.fluorescence_toggle.grid(row=3, column=1, padx=5, pady=2, sticky='w')
 
         tab1_controls.grid_columnconfigure(1, weight=1)
 
@@ -282,6 +316,9 @@ class PsTAAnalysisApp(tk.Tk):
         ttk.Label(tab4_controls, text="Wavelengths (nm), comma-separated:").pack(side='left', padx=5)
         self.wl_slice_var = tk.StringVar(value="500, 550, 600, 650")
         ttk.Entry(tab4_controls, textvariable=self.wl_slice_var, width=35).pack(side='left', padx=5)
+        ttk.Label(tab4_controls, text="Average range (+/- nm):").pack(side='left', padx=(10, 5))
+        self.wl_avg_range_var = tk.StringVar(value="0")
+        ttk.Entry(tab4_controls, textvariable=self.wl_avg_range_var, width=8).pack(side='left', padx=5)
         ttk.Button(
             tab4_controls, text="Plot", command=self.plot_wavelength_slices
         ).pack(side='left', padx=2)
@@ -523,6 +560,7 @@ class PsTAAnalysisApp(tk.Tk):
 
 
     def _run_original_matlab_pipeline(self, data_file):
+        self.pipeline_type = "original"
         dat = self.eng.TAExperiment(data_file)
 
         # Keep untouched + working copies
@@ -566,49 +604,80 @@ class PsTAAnalysisApp(tk.Tk):
 
         energy_axis = np.linspace(e_min, e_max, n_pixels)
         return energy_axis
+    
+
     def _run_new_txt_pipeline(self, data_file):
+        self.pipeline_type = "soliton"
         p = Path(data_file)
 
-        folder_path = str(p.parent) + "//"
+        folder_path = str(p.parent) + "/"
         file_name = p.name
 
         self.eng.addpath(folder_path, nargout=0)
 
         dat = self.eng.SolitonTAExperimentSelfContained(folder_path, file_name, 1)
 
-        # Keep untouched + working copies
         self.raw_dat = dat
         self.proc_dat = dat
-        self.eng.workspace['dat'] = dat
+        self.eng.workspace["dat"] = dat
 
-        energy_axis = self._infer_energy_axis_from_txt(data_file, e_min=1.5, e_max=3.5)
+        energy_axis_np = self._infer_energy_axis_from_txt(data_file, e_min=1.5, e_max=3.5)
+        energy_axis = matlab.double([energy_axis_np.tolist()])  # MATLAB row vector
+
         is_mirrored = False
         upper_bound = -1.5
-        chirp_coeffs = matlab.double([0, 0, 0, 0, 0])
+
+        # IMPORTANT:
+        # In the current MATLAB class, all-zero chirp coefficients trigger getpts().
+        # That will open an interactive MATLAB point-picking window and can make the
+        # Python UI look frozen. Use a non-interactive path or edit MATLAB as below.
+        chirp_coeffs = matlab.double([[0, 0, 0, 0, 0]])
+
+        self.eng.eval("dat = dat;", nargout=0)
 
         self.eng.mainSoliton_SC(
-            dat, energy_axis, is_mirrored, upper_bound,
-            'chirpCorrectionCoefficients', chirp_coeffs,
+            dat,
+            energy_axis,
+            is_mirrored,
+            upper_bound,
+            "chirpCorrectionCoefficients",
+            chirp_coeffs,
             nargout=0
         )
 
-        self.eng.workspace['dat'] = dat
+        self.proc_dat = dat
+        self.eng.workspace["dat"] = dat
 
-        arr = np.array(self.eng.eval("dat.TAMeanSortedBackgroundSub_CC"))
-        times = np.array(self.eng.eval("dat.timesSorted_CC")).flatten()
-        wavelengths = np.array(self.eng.eval("dat.energyAxis_CC")).flatten()
+        self._pull_current_dat_arrays()
+        self.update_2d_map()
 
-        self.raw_data = arr.copy()
+    def _pull_current_dat_arrays(self):
+        """
+        Pull TA mean, time axis, and x-axis from the current MATLAB dat object.
+        Handles both original Soliton.
+        """
+        if self.proc_dat is None:
+            raise ValueError("No MATLAB dat object is loaded.")
+
+        self.eng.workspace["dat"] = self.proc_dat
+
+        if self.pipeline_type == "soliton":
+            arr = np.array(self.eng.eval("dat.TAMeanSortedBackgroundSub_CC"))
+            times = np.array(self.eng.eval("dat.timesSorted_CC")).flatten()
+            xaxis = np.array(self.eng.eval("dat.energyAxis_CC")).flatten()
+
+        else:
+            arr = np.array(self.eng.eval("dat.TAMean"))
+            times = np.array(self.eng.eval("dat.times")).flatten()
+            xaxis = np.array(self.eng.eval("dat.wavelengths")).flatten()
+
         self.proc_data = arr.copy()
-
         self.data = self.proc_data
         self.times = times
-        self.wavelength = wavelengths
+        self.wavelength = xaxis
 
-        self.map_vmin_var.set(f"{arr.min():.4g}")
-        self.map_vmax_var.set(f"{arr.max():.4g}")
-
-        self.update_2d_map()
+        self.map_vmin_var.set(f"{np.nanmin(arr):.4g}")
+        self.map_vmax_var.set(f"{np.nanmax(arr):.4g}")
 
     def _parse_slice_values(self, text: str, label: str):
         """Parse a comma-separated string into a sorted list of floats.
@@ -650,6 +719,233 @@ class PsTAAnalysisApp(tk.Tk):
                 pad = 0.05 * (ymax - ymin)
             self.ax_time.set_ylim(ymin - pad, ymax + pad)
 
+    def _get_overlay_visible_var(self, overlay_key):
+        """Return the Tk BooleanVar associated with a time-trace overlay."""
+        if overlay_key == "ground_state":
+            return self.ground_state_visible_var
+        if overlay_key == "fluorescence":
+            return self.fluorescence_visible_var
+        raise ValueError(f"Unknown overlay type: {overlay_key}")
+
+    def _get_overlay_toggle(self, overlay_key):
+        """Return the Checkbutton widget associated with a time-trace overlay."""
+        if overlay_key == "ground_state":
+            return self.ground_state_toggle
+        if overlay_key == "fluorescence":
+            return self.fluorescence_toggle
+        raise ValueError(f"Unknown overlay type: {overlay_key}")
+
+
+    def _load_absorbance_csv(self, file_path):
+        """
+        Load a spectrum CSV with required columns:
+            Wavelength (nm), Absorbance (AU)
+        and optional column:
+            Std.Dev.
+        Returns a clean DataFrame sorted by wavelength.
+        """
+        # 1. Handle encodings safely
+        df = None
+        for encoding in ["utf-8", "utf-16", "utf-8-sig", "latin1"]:
+            try:
+                df = pd.read_csv(file_path, encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        print(df)
+        if df is None:
+            messagebox.showerror("CSV Error", "Could not decode the CSV file.")
+            return None
+
+        # Clean whitespace from column headers
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # 2. Extract Data Series based on headers or positions
+        if "Wavelength (nm)" in df.columns and "Absorbance (AU)" in df.columns:
+            wavelength_raw = df["Wavelength (nm)"]
+            absorbance_raw = df["Absorbance (AU)"]
+            std_dev_raw = df.get("Std.Dev.", None)  # Safe fetch if it exists
+        else:
+            # Fallback to positional parsing if headers don't match
+            if df.shape[1] < 2:
+                messagebox.showerror(
+                    "CSV Error",
+                    "CSV must contain at least two columns: wavelength and absorbance."
+                )
+                return None
+            wavelength_raw = df.iloc[:, 0]
+            absorbance_raw = df.iloc[:, 1]
+            # Assume 3rd column is Std.Dev if it exists
+            std_dev_raw = df.iloc[:, 2] if df.shape[1] >= 3 else None
+
+        # 3. Force values to numeric data types (coerce strings/errors to NaN)
+        wavelength_numeric = pd.to_numeric(wavelength_raw, errors="coerce")
+        absorbance_numeric = pd.to_numeric(absorbance_raw, errors="coerce")
+
+        # 4. Filter for rows where BOTH main metrics are valid numbers
+        valid_mask = wavelength_numeric.notna() & absorbance_numeric.notna()
+        
+        if not valid_mask.any():
+            messagebox.showerror(
+                "CSV Error",
+                "No valid numeric wavelength/absorbance rows found."
+            )
+            return None
+
+        # 5. Build a fresh, standardized DataFrame using the valid rows
+        clean_data = {
+            "Wavelength (nm)": wavelength_numeric[valid_mask],
+            "Absorbance (AU)": absorbance_numeric[valid_mask]
+        }
+
+        # Handle standard deviation if present
+        if std_dev_raw is not None:
+            std_dev_numeric = pd.to_numeric(std_dev_raw, errors="coerce")
+            clean_data["Std.Dev."] = std_dev_numeric[valid_mask]
+
+        clean_df = pd.DataFrame(clean_data)
+
+        # 6. Safely sort by Wavelength
+        return clean_df.sort_values(by="Wavelength (nm)").reset_index(drop=True)
+
+    def _get_time_trace_wavelength_mask(self, overlay_wavelengths):
+        """Apply the current time-domain wavelength range to an overlay spectrum."""
+        range_text = getattr(self, "time_trace_wl_range_var", tk.StringVar(value="")).get().strip()
+        if not range_text:
+            return np.ones_like(overlay_wavelengths, dtype=bool), None
+
+        wl_range = self._parse_range_values(range_text, "wavelength")
+        if wl_range is None:
+            return None, None
+
+        wl_min, wl_max = wl_range
+        mask = (overlay_wavelengths >= wl_min) & (overlay_wavelengths <= wl_max)
+        return mask, wl_range
+
+    def plot_scaled_absorbance_overlay(self, overlay_key):
+        """
+        Select a CSV, ask for a scale factor, then overlay
+        scale factor * Absorbance (AU) on the Time-Domain Traces plot.
+        """
+        overlay = self.time_trace_overlays[overlay_key]
+        label = overlay["label"]
+
+        file_path = filedialog.askopenfilename(
+            title=f"Select {label} CSV",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not file_path:
+            return
+
+        scale = simpledialog.askfloat(
+            f"{label} Scaling Factor",
+            f"Enter scaling factor for {label}:\n\nPlotted value = scaling factor * Absorbance (AU)",
+            parent=self,
+            initialvalue=1.0
+        )
+        if scale is None:
+            return
+
+        try:
+            df = self._load_absorbance_csv(file_path)
+        except Exception as e:
+            messagebox.showerror("CSV Error", str(e))
+            self.status_label.config(text=f"Status: Could not load {label} CSV.")
+            return
+
+        overlay.update({
+            "data": df,
+            "scale": float(scale),
+            "file_path": file_path,
+        })
+
+        self._plot_or_refresh_time_trace_overlay(overlay_key)
+        self._get_overlay_visible_var(overlay_key).set(True)
+        self._get_overlay_toggle(overlay_key).config(state="normal")
+
+        self.status_label.config(
+            text=f"Status: {label} plotted with scale factor {float(scale):g}."
+        )
+
+    def _plot_or_refresh_time_trace_overlay(self, overlay_key):
+        """Draw or redraw one stored absorbance overlay on the time-domain axis."""
+        overlay = self.time_trace_overlays[overlay_key]
+        df = overlay.get("data")
+        scale = overlay.get("scale")
+        if df is None or scale is None:
+            return
+
+        # Remove the previous artist before redrawing, especially after axis clears/range changes.
+        old_line = overlay.get("line")
+        if old_line is not None:
+            try:
+                old_line.remove()
+            except ValueError:
+                pass
+            overlay["line"] = None
+
+        wavelengths = df["Wavelength (nm)"].to_numpy(dtype=float)
+        scaled_absorbance = float(scale) * df["Absorbance (AU)"].to_numpy(dtype=float)
+
+        mask, wl_range = self._get_time_trace_wavelength_mask(wavelengths)
+        if mask is None:
+            return
+        if not np.any(mask):
+            messagebox.showwarning(
+                "Range Warning",
+                f"{overlay['label']} has no wavelengths inside the selected visible range."
+            )
+            return
+
+        (line,) = self.ax_time.plot(
+            wavelengths[mask],
+            scaled_absorbance[mask],
+            lw=2.0,
+            ls="--",
+            label=f"{overlay['label']} x {float(scale):g}"
+        )
+        overlay["line"] = line
+
+        visible = self._get_overlay_visible_var(overlay_key).get()
+        line.set_visible(visible)
+
+        self._refresh_time_trace_legend()
+        self.fig_time.tight_layout()
+        self.canvas_time.draw()
+
+    def _refresh_time_trace_overlays(self):
+        """Redraw every loaded overlay after the time-domain axis is cleared or replotted."""
+        for overlay_key in self.time_trace_overlays:
+            self._plot_or_refresh_time_trace_overlay(overlay_key)
+
+    def toggle_time_trace_overlay(self, overlay_key):
+        """Show/hide a plotted absorbance overlay without deleting it."""
+        overlay = self.time_trace_overlays[overlay_key]
+        line = overlay.get("line")
+        if line is None:
+            return
+
+        line.set_visible(self._get_overlay_visible_var(overlay_key).get())
+        self._refresh_time_trace_legend()
+        self.canvas_time.draw()
+
+    def _refresh_time_trace_legend(self):
+        """Show only visible time traces and overlays in the legend."""
+        handles, labels = self.ax_time.get_legend_handles_labels()
+        visible_pairs = [
+            (handle, label)
+            for handle, label in zip(handles, labels)
+            if getattr(handle, "get_visible", lambda: True)()
+        ]
+
+        legend = self.ax_time.get_legend()
+        if legend is not None:
+            legend.remove()
+
+        if visible_pairs:
+            visible_handles, visible_labels = zip(*visible_pairs)
+            self.ax_time.legend(visible_handles, visible_labels, fontsize=8, framealpha=0.7)
+
     def plot_time_slices(self):
         """Plot ΔA vs wavelength for each requested time value (Tab 1)."""
         if not hasattr(self, 'data') or self.data is None:
@@ -690,8 +986,6 @@ class PsTAAnalysisApp(tk.Tk):
                 color=color, lw=1.5, label=f"{t_actual:.3g} ps"
             )
 
-        self.ax_time.legend(fontsize=8, framealpha=0.7)
-
         if wl_range is not None:
             self.ax_time.set_xlim(*wl_range)
             self._autoscale_time_trace_yaxis(wl_range)
@@ -699,41 +993,97 @@ class PsTAAnalysisApp(tk.Tk):
             self.ax_time.set_xlim(self.wavelength.min(), self.wavelength.max())
             self._autoscale_time_trace_yaxis((self.wavelength.min(), self.wavelength.max()))
 
+        self._refresh_time_trace_overlays()
+        self._refresh_time_trace_legend()
         self.fig_time.tight_layout()
         self.canvas_time.draw()
  
  
     def plot_wavelength_slices(self):
-        """Plot ΔA vs time for each requested wavelength value (Tab 4)."""
+        """Plot ΔA vs time for each requested wavelength value.
+
+        If an averaging range is provided, each kinetic trace is averaged over
+        wl_req +/- range_nm.
+        Example:
+            wavelengths = 500, 550, 600
+            range = 10
+            averages over 490-510, 540-560, 590-610 nm
+        """
         if not hasattr(self, 'data') or self.data is None:
             messagebox.showwarning("No Data", "Load a data file first.")
             return
-    
+
         targets = self._parse_slice_values(self.wl_slice_var.get(), "wavelength")
         if targets is None:
             return
-    
+
+        try:
+            avg_range = float(self.wl_avg_range_var.get().strip())
+            if avg_range < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror(
+                "Input Error",
+                'Invalid wavelength averaging range — enter a non-negative number.\n'
+                'Example: "10" averages each trace over wavelength +/- 10 nm.'
+            )
+            return
+
         self.ax_wl.cla()
         self.ax_wl.set_title("Wavelength-Domain Traces")
         self.ax_wl.set_xlabel("Time (ps)")
         self.ax_wl.set_ylabel("ΔA")
         self.ax_wl.grid(True)
         self.ax_wl.axhline(0, color='gray', lw=0.8, ls='--')
-    
+
         cmap = plt.get_cmap("viridis")
         colors = [cmap(i / max(len(targets) - 1, 1)) for i in range(len(targets))]
-    
+
         for wl_req, color in zip(targets, colors):
-            idx = int(np.argmin(np.abs(self.wavelength - wl_req)))
-            wl_actual = self.wavelength[idx]
+            if avg_range == 0:
+                # Original behavior: use nearest wavelength channel
+                idx = int(np.argmin(np.abs(self.wavelength - wl_req)))
+                wl_actual = self.wavelength[idx]
+                trace = self.data[:, idx]
+                label = f"{wl_actual:.4g} nm"
+
+            else:
+                wl_min = wl_req - avg_range
+                wl_max = wl_req + avg_range
+                mask = (self.wavelength >= wl_min) & (self.wavelength <= wl_max)
+
+                if not np.any(mask):
+                    messagebox.showwarning(
+                        "Range Warning",
+                        f"No wavelength channels found in {wl_min:g}-{wl_max:g} nm."
+                    )
+                    continue
+
+                # Average ΔA over the selected wavelength columns at each time point
+                trace = np.nanmean(self.data[:, mask], axis=1)
+
+                actual_min = np.nanmin(self.wavelength[mask])
+                actual_max = np.nanmax(self.wavelength[mask])
+                label = f"{wl_req:.4g} nm avg ({actual_min:.4g}-{actual_max:.4g})"
+
             self.ax_wl.plot(
-                self.times, self.data[:, idx],
-                color=color, lw=1.5, label=f"{wl_actual:.4g} nm"
+                self.times,
+                trace,
+                color=color,
+                lw=1.5,
+                label=label
             )
-    
+
         self.ax_wl.legend(fontsize=8, framealpha=0.7)
         self.fig_wl.tight_layout()
         self.canvas_wl.draw()
+
+        if avg_range == 0:
+            self.status_label.config(text="Status: Wavelength-domain traces plotted.")
+        else:
+            self.status_label.config(
+                text=f"Status: Wavelength-domain traces averaged over +/- {avg_range:g} nm."
+            )
 
     def _parse_range_values(self, text: str, label: str):
         """Parse a comma-separated pair of floats into (low, high)."""
@@ -766,6 +1116,9 @@ class PsTAAnalysisApp(tk.Tk):
 
         wl_min, wl_max = parsed
         self.ax_time.set_xlim(wl_min, wl_max)
+        self._autoscale_time_trace_yaxis((wl_min, wl_max))
+        self._refresh_time_trace_overlays()
+        self._refresh_time_trace_legend()
         self.fig_time.tight_layout()
         self.canvas_time.draw()
         self.status_label.config(
@@ -779,6 +1132,9 @@ class PsTAAnalysisApp(tk.Tk):
             return
         self.time_trace_wl_range_var.set(f"{self.wavelength.min():.4g}, {self.wavelength.max():.4g}")
         self.ax_time.set_xlim(self.wavelength.min(), self.wavelength.max())
+        self._autoscale_time_trace_yaxis((self.wavelength.min(), self.wavelength.max()))
+        self._refresh_time_trace_overlays()
+        self._refresh_time_trace_legend()
         self.fig_time.tight_layout()
         self.canvas_time.draw()
         self.status_label.config(text="Status: Time-trace wavelength view reset.")
@@ -796,6 +1152,11 @@ class PsTAAnalysisApp(tk.Tk):
             ha='center', va='center', transform=ax.transAxes,
             fontsize=12, color='gray', alpha=0.5
         )
+
+        if ax is getattr(self, "ax_time", None):
+            for overlay in getattr(self, "time_trace_overlays", {}).values():
+                overlay["line"] = None
+
         canvas.draw()
 
 
@@ -879,23 +1240,27 @@ class PsTAAnalysisApp(tk.Tk):
             self._sync_working_dat_to_matlab()
 
             # IMPORTANT: assign the result back to dat in MATLAB
-            self.eng.eval(
-                f"subtractTABackground(dat, {float(upper_val)});",
-                nargout=0
-            )
+            if self.pipeline_type == "soliton":
+                self.eng.eval(
+                    f"backgroundSubtractSoliton_SC(dat, {float(upper_val)});",
+                    nargout=0
+                )
 
-            # Save corrected working copy
-            self.proc_dat = self.eng.workspace['dat']
+                # Keep the current chirp-corrected field in sync after new background subtraction.
+                self.eng.eval(
+                    "chirpCorrectionSoliton_SC(dat, dat.chirpCorrectionCoefficients);",
+                    nargout=0
+                )
 
-            # Refresh arrays from the corrected working copy
-            arr = np.array(self.eng.eval("dat.TAMean"))
-            times = np.array(self.eng.eval("dat.times")).flatten()
-            wavelengths = np.array(self.eng.eval("dat.wavelengths")).flatten()
+            else:
+                self.eng.eval(
+                    f"subtractTABackground(dat, {float(upper_val)});",
+                    nargout=0
+                )
 
-            self.proc_data = arr.copy()
-            self.data = self.proc_data
-            self.times = times
-            self.wavelength = wavelengths
+            self.proc_dat = self.eng.workspace["dat"]
+
+            self._pull_current_dat_arrays()
 
             self.update_2d_map()
 
@@ -1011,17 +1376,16 @@ class PsTAAnalysisApp(tk.Tk):
         self.update_idletasks()
 
     def _refresh_dat_from_matlab(self, success_msg):
-        """Pull dat arrays from MATLAB workspace and update Python state."""
+        """
+        Refresh Python-side arrays from the current MATLAB dat object.
+        Works for both old TAExperiment and new SolitonTAExperimentSelfContained.
+        """
         try:
-            self.proc_dat = self.eng.workspace['dat']
+            self.proc_dat = self.eng.workspace["dat"]
 
-            self.data = np.array(self.eng.eval("dat.TAMean"))
-            self.times = np.array(self.eng.eval("dat.times")).flatten()
-            self.wavelength = np.array(self.eng.eval("dat.wavelengths")).flatten()
+            self._pull_current_dat_arrays()
 
-            self.proc_data = self.data.copy()
-
-            if hasattr(self, 'update_2d_map'):
+            if hasattr(self, "update_2d_map"):
                 self.update_2d_map()
 
             self._update_status(success_msg)
@@ -1030,8 +1394,9 @@ class PsTAAnalysisApp(tk.Tk):
         except Exception as e:
             messagebox.showerror(
                 "MATLAB Error",
-                f"Could not refresh dat from MATLAB workspace: {e}"
+                f"Could not refresh dat from MATLAB workspace:\n{e}"
             )
+            self._update_status("Error refreshing MATLAB data.")
             
     def on_closing(self):
         if messagebox.askokcancel("Quit", "Do you want to quit?"):

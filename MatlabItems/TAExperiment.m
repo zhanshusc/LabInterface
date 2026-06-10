@@ -513,14 +513,7 @@ classdef TAExperiment < handle
                 obj.scans(i).populate714(data.TransientAbsorption.scans(i));
             end
             
-            if ~isempty(data.TransientAbsorption.analytes)
-                obj.analytes = Analyte.empty(length(data.TransientAbsorption.analytes), 0);
-                for i = 1:length(data.TransientAbsorption.analytes)
-                    mol = data.TransientAbsorption.analytes(i).analyte;
-                    conc = data.TransientAbsorption.analytes(i).concentration;%sprintf('%.3f', data.TransientAbsorption.analytes(i).concentration);
-                    obj.analytes(i) = Analyte(mol, conc);
-                end
-            end
+            obj.analytes = Analyte.empty;
 
             [obj.TAMean, obj.TAVariance, obj.TANShots, obj.pumpOnMean, obj.pumpOnVariance, obj.pumpOnNShots, obj.pumpOffMean, obj.pumpOffVariance, obj.pumpOffNShots] = deal(zeros(obj.nTimes, obj.nPixels));
             

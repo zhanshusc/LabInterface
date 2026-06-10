@@ -277,36 +277,15 @@ classdef SolitonTAExperimentSelfContained < handle
             CCenergyAx=1:size(energyAx,2);
             timeWindow=[-2,2]; % window for polynomial fit
             [~,TimeInx] = min(abs(timeAx-timeWindow));
-            if sum(CCcoeffs)==0
-            % plot data
-                figure();
-                [~,h]=contourf(CCenergyAx,newTimeAx(TimeInx(1):TimeInx(2)),data(TimeInx(1):TimeInx(2),:),100);set(h,'Linestyle','none');colormap(turbo)
-                colorbar()
-                % % fixes white to zero
-                cmax = .002;%max(data1(TimeInx(1):TimeInx(2),:),[],'all');
-                cmin = -.002;%min(data1(TimeInx(1):TimeInx(2),:),[],'all');
-                xlim([300,1000]);
-                colormap(obj.divergingBlueWhiteRed_SC(200));
-                clim([cmin cmax])
-                % User selects points
-                [x,y] = getpts;
-                % fourth order polynomial is used to fit the chirp
-                f = polyfit(x,y,4);
-                % coeffs = coeffvalues(f);
-                coeffs = f;
-                p1 = coeffs(1);
-                p2 = coeffs(2);
-                p3 = coeffs(3);
-                p4 = coeffs(4);
-                p5 = coeffs(5);
-                obj.chirpCorrectionCoefficients=coeffs;
-                fitted = p1*CCenergyAx.^4 + p2*CCenergyAx.^3 + p3*CCenergyAx.^2 + p4*CCenergyAx + p5;
-                figure();
-                % plot(x,y);hold on;plot(f);plot(newprobeax,fitted);
-                plot(x,y);hold on;plot(CCenergyAx,fitted); 
-                %clear p1 p2 p3 p4 p5 coeffs x y f
+            if all(CCcoeffs == 0)
+                % Non-interactive default: no chirp correction.
+                fitted = zeros(size(CCenergyAx));
             else
-                fitted=CCcoeffs(1)*CCenergyAx.^4 + CCcoeffs(2)*CCenergyAx.^3 + CCcoeffs(3)*CCenergyAx.^2 + CCcoeffs(4)*CCenergyAx + CCcoeffs(5);
+                fitted = CCcoeffs(1)*CCenergyAx.^4 + ...
+                        CCcoeffs(2)*CCenergyAx.^3 + ...
+                        CCcoeffs(3)*CCenergyAx.^2 + ...
+                        CCcoeffs(4)*CCenergyAx + ...
+                        CCcoeffs(5);
             end
         
             
