@@ -221,7 +221,8 @@ class PsTAAnalysisApp(tk.Tk):
         frame = self.middle_panel
         
         # Create the Tab Group (Notebook)
-        tab_control = ttk.Notebook(frame)
+        self.tab_control = ttk.Notebook(frame)
+        tab_control = self.tab_control
         
         # Tab Frames
         tab1 = ttk.Frame(tab_control, padding="10")
@@ -237,6 +238,7 @@ class PsTAAnalysisApp(tk.Tk):
         
         # Make the notebook fill the middle panel
         tab_control.pack(expand=1, fill='both')
+        tab_control.bind('<<NotebookTabChanged>>', self._on_middle_tab_changed)
 
         # Populate Tab 1: Time-Domain Traces 
         tab1_controls = ttk.Frame(tab1)
@@ -433,48 +435,14 @@ class PsTAAnalysisApp(tk.Tk):
 
 
     def _create_right_panel(self):
-        """Populates the Right Panel (Analysis & Export)"""
+        """Populates the Right Panel with a dynamic tab-specific top area and shared exports."""
         frame = self.right_panel
 
-        # Section: Kinetic Fitting
-        fit_frame = ttk.LabelFrame(frame, text="Kinetic Fitting", padding="10")
-        fit_frame.pack(fill='x', pady=5)
-        
-        ttk.Label(fit_frame, text="Fit Mode:").pack()
-        self.fit_mode_combo = ttk.Combobox(
-            fit_frame, 
-            values=["single exp", "bi exp", "tri exp"]
-        )
-        self.fit_mode_combo.current(0)
-        self.fit_mode_combo.pack(fill='x', pady=2)
+        # The top portion changes when the user switches tabs in the middle panel.
+        self.right_dynamic_frame = ttk.Frame(frame)
+        self.right_dynamic_frame.pack(fill='x', pady=5, side='top')
 
-        # Fit Range
-        fit_range_frame = ttk.Frame(fit_frame)
-        fit_range_frame.pack(fill='x', pady=5)
-        
-        ttk.Label(fit_range_frame, text="Fit Range:").pack(side='left')
-        self.fit_start_entry = ttk.Entry(fit_range_frame, width=7)
-        self.fit_start_entry.insert(0, "start ps")
-        self.fit_start_entry.pack(side='left', padx=2)
-        
-        self.fit_end_entry = ttk.Entry(fit_range_frame, width=7)
-        self.fit_end_entry.insert(0, "end ns")
-        self.fit_end_entry.pack(side='left', padx=2)
-        
-        ttk.Button(
-            fit_frame, text="Perform Fit", command=self.placeholder_command
-        ).pack(fill='x', pady=5)
-        
-        # Results Box
-        ttk.Label(fit_frame, text="Fit Results:").pack()
-        self.results_text = tk.Text(fit_frame, height=8, width=30)
-        self.results_text.insert(
-            '1.0', "τ₁, τ₂, amplitudes, χ²...\n"
-        )
-        self.results_text.config(state='disabled', bg='#f0f0f0') # Read-only
-        self.results_text.pack(fill='x', expand=True, pady=5)
-        
-        # Section: Export Options 
+        # Section: Export Options stays available for every middle-panel tab.
         export_frame = ttk.LabelFrame(frame, text="Export Options", padding="10")
         export_frame.pack(fill='x', pady=5, side='bottom')
 
@@ -484,7 +452,7 @@ class PsTAAnalysisApp(tk.Tk):
 
         ttk.Label(export_frame, text="Export Plots:").pack()
         self.export_plot_combo = ttk.Combobox(
-            export_frame, 
+            export_frame,
             values=["PNG", "PDF", "SVG"]
         )
         self.export_plot_combo.current(0)
@@ -493,6 +461,295 @@ class PsTAAnalysisApp(tk.Tk):
         ttk.Button(
             export_frame, text="Save Report", command=self.placeholder_command
         ).pack(fill='x', pady=2)
+
+        self._update_right_panel_for_active_tab()
+
+    def _on_middle_tab_changed(self, event=None):
+        """Refresh the dynamic right-panel controls after a middle tab change."""
+        if hasattr(self, "right_dynamic_frame"):
+            self._update_right_panel_for_active_tab()
+
+    def _active_middle_tab_text(self):
+        """Return the current middle notebook tab label."""
+        if not hasattr(self, "tab_control"):
+            return "Fitting"
+        selected = self.tab_control.select()
+        if not selected:
+            return "Fitting"
+        return self.tab_control.tab(selected, "text")
+
+    def _clear_right_dynamic_frame(self):
+        """Remove the tab-specific widgets from the dynamic right-panel area."""
+        for child in self.right_dynamic_frame.winfo_children():
+            child.destroy()
+
+    def _update_right_panel_for_active_tab(self):
+        """Show fitting controls only on Fitting; otherwise show tab-specific graph range controls."""
+        self._clear_right_dynamic_frame()
+        active_tab = self._active_middle_tab_text()
+
+        if active_tab == "Fitting":
+            self._create_fitting_right_controls(self.right_dynamic_frame)
+        else:
+            self._create_range_adjuster_right_controls(self.right_dynamic_frame, active_tab)
+
+    def _create_fitting_right_controls(self, parent):
+        """Original Kinetic Fitting layout, preserved for the Fitting tab."""
+        fit_frame = ttk.LabelFrame(parent, text="Kinetic Fitting", padding="10")
+        fit_frame.pack(fill='x', pady=5)
+
+        ttk.Label(fit_frame, text="Fit Mode:").pack()
+        self.fit_mode_combo = ttk.Combobox(
+            fit_frame,
+            values=["single exp", "bi exp", "tri exp"]
+        )
+        self.fit_mode_combo.current(0)
+        self.fit_mode_combo.pack(fill='x', pady=2)
+
+        fit_range_frame = ttk.Frame(fit_frame)
+        fit_range_frame.pack(fill='x', pady=5)
+
+        ttk.Label(fit_range_frame, text="Fit Range:").pack(side='left')
+        self.fit_start_entry = ttk.Entry(fit_range_frame, width=7)
+        self.fit_start_entry.insert(0, "start ps")
+        self.fit_start_entry.pack(side='left', padx=2)
+
+        self.fit_end_entry = ttk.Entry(fit_range_frame, width=7)
+        self.fit_end_entry.insert(0, "end ns")
+        self.fit_end_entry.pack(side='left', padx=2)
+
+        ttk.Button(
+            fit_frame, text="Perform Fit", command=self.placeholder_command
+        ).pack(fill='x', pady=5)
+
+        ttk.Label(fit_frame, text="Fit Results:").pack()
+        self.results_text = tk.Text(fit_frame, height=8, width=30)
+        self.results_text.insert(
+            '1.0', "τ₁, τ₂, amplitudes, χ²...\n"
+        )
+        self.results_text.config(state='disabled', bg='#f0f0f0')
+        self.results_text.pack(fill='x', expand=True, pady=5)
+
+    def _create_range_adjuster_right_controls(self, parent, active_tab):
+        """Create tab-specific numeric range inputs and a Re-graph button."""
+        range_frame = ttk.LabelFrame(parent, text=f"{active_tab} Range Options", padding="10")
+        range_frame.pack(fill='x', pady=5)
+
+        ttk.Label(
+            range_frame,
+            text="Enter numeric Min/Max ranges, then click Re-graph to redraw the active graph with those limits.",
+            wraplength=220
+        ).pack(fill='x', pady=(0, 8))
+
+        if not hasattr(self, "right_range_vars"):
+            self.right_range_vars = {}
+        if not hasattr(self, "right_range_values"):
+            self.right_range_values = {}
+
+        if active_tab == "Time-Domain Traces":
+            range_specs = [
+                ("Wavelength", "nm", self._safe_axis_min(getattr(self, "wavelength", None), 400), self._safe_axis_max(getattr(self, "wavelength", None), 800)),
+                ("Signal", "ΔA", self._safe_data_min(-1.0), self._safe_data_max(1.0)),
+            ]
+        elif active_tab == "Wavelength-Domain Traces":
+            range_specs = [
+                ("Time", "ps", self._safe_axis_min(getattr(self, "times", None), 0), self._safe_axis_max(getattr(self, "times", None), 1000)),
+                ("Signal", "ΔA", self._safe_data_min(-1.0), self._safe_data_max(1.0)),
+            ]
+        elif active_tab == "2D Map View":
+            range_specs = [
+                ("Wavelength", "nm", self._safe_axis_min(getattr(self, "wavelength", None), 400), self._safe_axis_max(getattr(self, "wavelength", None), 800)),
+                ("Time", "ps", self._safe_axis_min(getattr(self, "times", None), 0), self._safe_axis_max(getattr(self, "times", None), 1000)),
+                ("Color", "ΔA", self._safe_data_min(-1.0), self._safe_data_max(1.0)),
+            ]
+        else:
+            range_specs = []
+
+        self.right_range_vars[active_tab] = {}
+        saved_tab_values = self.right_range_values.get(active_tab, {})
+
+        for label, units, default_min, default_max in range_specs:
+            saved_min, saved_max = saved_tab_values.get(label, (default_min, default_max))
+            min_var, max_var = self._add_numeric_range_inputs(
+                range_frame,
+                label=label,
+                units=units,
+                min_value=saved_min,
+                max_value=saved_max
+            )
+            self.right_range_vars[active_tab][label] = {
+                "min": min_var,
+                "max": max_var,
+                "units": units,
+            }
+
+        ttk.Button(
+            range_frame,
+            text="Re-graph",
+            command=lambda tab=active_tab: self._right_panel_regraph_requested(tab)
+        ).pack(fill='x', pady=(10, 2))
+
+    def _add_numeric_range_inputs(self, parent, label, units, min_value, max_value):
+        """Add one min/max numeric input row for a graph range."""
+        row = ttk.Frame(parent)
+        row.pack(fill='x', pady=4)
+        row.grid_columnconfigure(1, weight=1)
+        row.grid_columnconfigure(3, weight=1)
+
+        min_var = tk.StringVar(value=f"{float(min_value):.4g}")
+        max_var = tk.StringVar(value=f"{float(max_value):.4g}")
+
+        ttk.Label(row, text=f"{label} ({units})").grid(row=0, column=0, columnspan=4, sticky='w')
+        ttk.Label(row, text="Min").grid(row=1, column=0, sticky='w', padx=(0, 3), pady=2)
+        ttk.Entry(row, textvariable=min_var, width=9).grid(row=1, column=1, sticky='ew', padx=(0, 6), pady=2)
+        ttk.Label(row, text="Max").grid(row=1, column=2, sticky='w', padx=(0, 3), pady=2)
+        ttk.Entry(row, textvariable=max_var, width=9).grid(row=1, column=3, sticky='ew', pady=2)
+
+        return min_var, max_var
+
+    def _right_panel_regraph_requested(self, active_tab):
+        """Validate range fields and redraw the active graph with those ranges."""
+        parsed_ranges = self._parse_right_panel_ranges(active_tab)
+        if parsed_ranges is None:
+            return
+
+        if active_tab == "Time-Domain Traces":
+            self._regraph_time_domain_from_right_panel(parsed_ranges)
+        elif active_tab == "Wavelength-Domain Traces":
+            self._regraph_wavelength_domain_from_right_panel(parsed_ranges)
+        elif active_tab == "2D Map View":
+            self._regraph_2d_map_from_right_panel(parsed_ranges)
+
+    def _parse_right_panel_ranges(self, active_tab):
+        """Return validated right-panel ranges as {label: (min, max, units)}."""
+        tab_ranges = getattr(self, "right_range_vars", {}).get(active_tab, {})
+        parsed_ranges = {}
+
+        for label, spec in tab_ranges.items():
+            try:
+                min_value = float(spec["min"].get().strip())
+                max_value = float(spec["max"].get().strip())
+            except ValueError:
+                messagebox.showerror(
+                    "Input Error",
+                    f"Invalid {label} range. Enter numeric Min and Max values."
+                )
+                return None
+
+            if min_value == max_value:
+                messagebox.showerror(
+                    "Input Error",
+                    f"Invalid {label} range. Min and Max cannot be the same value."
+                )
+                return None
+
+            if min_value > max_value:
+                min_value, max_value = max_value, min_value
+                spec["min"].set(f"{min_value:.4g}")
+                spec["max"].set(f"{max_value:.4g}")
+
+            parsed_ranges[label] = (min_value, max_value, spec["units"])
+
+        if not hasattr(self, "right_range_values"):
+            self.right_range_values = {}
+        self.right_range_values[active_tab] = {
+            label: (values[0], values[1])
+            for label, values in parsed_ranges.items()
+        }
+
+        return parsed_ranges
+
+    def _set_axis_limits_from_right_ranges(self, ax, parsed_ranges, x_label, y_label=None):
+        """Apply parsed right-panel x/y limits to an axes object."""
+        if x_label in parsed_ranges:
+            xmin, xmax, _ = parsed_ranges[x_label]
+            ax.set_xlim(xmin, xmax)
+        if y_label is not None and y_label in parsed_ranges:
+            ymin, ymax, _ = parsed_ranges[y_label]
+            ax.set_ylim(ymin, ymax)
+
+    def _regraph_time_domain_from_right_panel(self, parsed_ranges):
+        """Redraw Time-Domain Traces using right-panel wavelength and signal ranges."""
+        if not hasattr(self, 'data') or self.data is None:
+            messagebox.showwarning("No Data", "Load a data file first.")
+            return
+
+        if "Wavelength" in parsed_ranges:
+            wl_min, wl_max, _ = parsed_ranges["Wavelength"]
+            # Reuse the existing tab-local range variable so overlays and the Plot button stay in sync.
+            if hasattr(self, "time_trace_wl_range_var"):
+                self.time_trace_wl_range_var.set(f"{wl_min:g}, {wl_max:g}")
+
+        self.plot_time_slices()
+        self._set_axis_limits_from_right_ranges(
+            self.ax_time, parsed_ranges, x_label="Wavelength", y_label="Signal"
+        )
+        self.fig_time.tight_layout()
+        self.canvas_time.draw()
+        self.status_label.config(text="Status: Time-domain traces re-graphed with right-panel ranges.")
+
+    def _regraph_wavelength_domain_from_right_panel(self, parsed_ranges):
+        """Redraw Wavelength-Domain Traces using right-panel time and signal ranges."""
+        if not hasattr(self, 'data') or self.data is None:
+            messagebox.showwarning("No Data", "Load a data file first.")
+            return
+
+        self.plot_wavelength_slices()
+        self._set_axis_limits_from_right_ranges(
+            self.ax_wl, parsed_ranges, x_label="Time", y_label="Signal"
+        )
+        self.fig_wl.tight_layout()
+        self.canvas_wl.draw()
+        self.status_label.config(text="Status: Wavelength-domain traces re-graphed with right-panel ranges.")
+
+    def _regraph_2d_map_from_right_panel(self, parsed_ranges):
+        """Redraw the 2D map using right-panel wavelength, time, and color ranges."""
+        if not hasattr(self, 'data') or self.data is None:
+            messagebox.showwarning("No Data", "Load a data file first.")
+            return
+
+        if "Color" in parsed_ranges:
+            color_min, color_max, _ = parsed_ranges["Color"]
+            self.map_vmin_var.set(f"{color_min:.4g}")
+            self.map_vmax_var.set(f"{color_max:.4g}")
+
+        self.update_2d_map()
+        self._set_axis_limits_from_right_ranges(
+            self.map_ax, parsed_ranges, x_label="Wavelength", y_label="Time"
+        )
+        self.map_fig.tight_layout()
+        self.canvas_tab2.draw()
+        self.status_label.config(text="Status: 2D map re-graphed with right-panel ranges.")
+
+    def _safe_axis_min(self, axis, fallback):
+        """Return a finite axis minimum or a fallback placeholder."""
+        if axis is None:
+            return fallback
+        value = np.nanmin(axis)
+        return float(value) if np.isfinite(value) else fallback
+
+    def _safe_axis_max(self, axis, fallback):
+        """Return a finite axis maximum or a fallback placeholder."""
+        if axis is None:
+            return fallback
+        value = np.nanmax(axis)
+        return float(value) if np.isfinite(value) else fallback
+
+    def _safe_data_min(self, fallback):
+        """Return a finite data minimum or a fallback placeholder."""
+        data = getattr(self, "data", None)
+        if data is None:
+            return fallback
+        value = np.nanmin(data)
+        return float(value) if np.isfinite(value) else fallback
+
+    def _safe_data_max(self, fallback):
+        """Return a finite data maximum or a fallback placeholder."""
+        data = getattr(self, "data", None)
+        if data is None:
+            return fallback
+        value = np.nanmax(data)
+        return float(value) if np.isfinite(value) else fallback
 
 
     def _create_status_bar(self):
@@ -592,6 +849,9 @@ class PsTAAnalysisApp(tk.Tk):
         self.map_vmin_var.set(f"{arr.min():.4g}")
         self.map_vmax_var.set(f"{arr.max():.4g}")
 
+        if hasattr(self, "right_dynamic_frame"):
+            self._update_right_panel_for_active_tab()
+
         self.update_2d_map()
 
     def _infer_energy_axis_from_txt(self, data_file, e_min=1.5, e_max=3.5):
@@ -689,6 +949,9 @@ class PsTAAnalysisApp(tk.Tk):
         self.map_vmin_var.set(f"{np.nanmin(arr):.4g}")
         self.map_vmax_var.set(f"{np.nanmax(arr):.4g}")
 
+        if hasattr(self, "right_dynamic_frame"):
+            self._update_right_panel_for_active_tab()
+
     def _parse_slice_values(self, text: str, label: str):
         """Parse a comma-separated string into a sorted list of floats.
         Returns None and shows an error dialog on bad input."""
@@ -746,6 +1009,83 @@ class PsTAAnalysisApp(tk.Tk):
         raise ValueError(f"Unknown overlay type: {overlay_key}")
 
 
+    def _remove_time_trace_overlay_artist(self, overlay_key):
+        """Remove one overlay line from the time-domain axis and clear its handle."""
+        overlay = self.time_trace_overlays.get(overlay_key)
+        if overlay is None:
+            return
+
+        old_line = overlay.get("line")
+        if old_line is not None:
+            try:
+                old_line.remove()
+            except ValueError:
+                pass
+            overlay["line"] = None
+
+    def _validate_time_domain_data(self):
+        """Return True when the time-domain plot has consistent arrays to graph."""
+        if getattr(self, "data", None) is None or getattr(self, "wavelength", None) is None or getattr(self, "times", None) is None:
+            messagebox.showwarning("No Data", "Load a data file first.")
+            return False
+
+        if self.data.ndim != 2:
+            messagebox.showerror("Data Error", "Time-domain plotting expects a 2D data array.")
+            return False
+
+        if len(self.times) != self.data.shape[0]:
+            messagebox.showerror(
+                "Data Error",
+                "The number of time points does not match the number of data rows."
+            )
+            return False
+
+        if len(self.wavelength) != self.data.shape[1]:
+            messagebox.showerror(
+                "Data Error",
+                "The number of wavelength points does not match the number of data columns."
+            )
+            return False
+
+        if not np.any(np.isfinite(self.times)) or not np.any(np.isfinite(self.wavelength)):
+            messagebox.showerror("Data Error", "Time or wavelength axes contain no finite values.")
+            return False
+
+        return True
+
+    def _current_time_domain_wavelength_range(self):
+        """Parse the tab-local wavelength range field, if the user entered one."""
+        if getattr(self, "time_trace_wl_range_var", None) is None:
+            return None
+
+        range_text = self.time_trace_wl_range_var.get().strip()
+        if not range_text:
+            return None
+
+        return self._parse_range_values(range_text, "wavelength")
+
+    def _time_domain_wavelength_mask(self, wl_range):
+        """Return a valid boolean mask for the selected time-domain wavelength range."""
+        finite_mask = np.isfinite(self.wavelength)
+
+        if wl_range is None:
+            mask = finite_mask
+        else:
+            wl_min, wl_max = wl_range
+            mask = finite_mask & (self.wavelength >= wl_min) & (self.wavelength <= wl_max)
+
+        if not np.any(mask):
+            if wl_range is None:
+                messagebox.showerror("Range Error", "No finite wavelengths are available to plot.")
+            else:
+                messagebox.showerror(
+                    "Range Error",
+                    f"No wavelength channels found in {wl_range[0]:g}-{wl_range[1]:g}."
+                )
+            return None
+
+        return mask
+
     def _load_absorbance_csv(self, file_path):
         """
         Load a spectrum CSV with required columns:
@@ -758,11 +1098,10 @@ class PsTAAnalysisApp(tk.Tk):
         df = None
         for encoding in ["utf-8", "utf-16", "utf-8-sig", "latin1"]:
             try:
-                df = pd.read_csv(file_path, encoding=encoding)
+                df = pd.read_csv(file_path, encoding=encoding) 
                 break
             except UnicodeDecodeError:
                 continue
-        print(df)
         if df is None:
             messagebox.showerror("CSV Error", "Could not decode the CSV file.")
             return None
@@ -837,6 +1176,10 @@ class PsTAAnalysisApp(tk.Tk):
         Select a CSV, ask for a scale factor, then overlay
         scale factor * Absorbance (AU) on the Time-Domain Traces plot.
         """
+        if overlay_key not in getattr(self, "time_trace_overlays", {}):
+            messagebox.showerror("Overlay Error", f"Unknown overlay type: {overlay_key}")
+            return
+
         overlay = self.time_trace_overlays[overlay_key]
         label = overlay["label"]
 
@@ -863,49 +1206,81 @@ class PsTAAnalysisApp(tk.Tk):
             self.status_label.config(text=f"Status: Could not load {label} CSV.")
             return
 
+        # Do not enable toggles or overwrite a good overlay with a failed import.
+        if df is None or df.empty:
+            self.status_label.config(text=f"Status: Could not load {label} CSV.")
+            return
+
         overlay.update({
             "data": df,
             "scale": float(scale),
             "file_path": file_path,
         })
 
-        self._plot_or_refresh_time_trace_overlay(overlay_key)
+        # Set visibility before plotting so re-importing an overlay after it was hidden
+        # does not create a hidden line while the checkbox says it is shown.
         self._get_overlay_visible_var(overlay_key).set(True)
         self._get_overlay_toggle(overlay_key).config(state="normal")
 
-        self.status_label.config(
-            text=f"Status: {label} plotted with scale factor {float(scale):g}."
-        )
+        plotted = self._plot_or_refresh_time_trace_overlay(overlay_key, redraw=False, warn_if_empty=True)
+        self._refresh_time_trace_legend()
+        self.fig_time.tight_layout()
+        self.canvas_time.draw()
 
-    def _plot_or_refresh_time_trace_overlay(self, overlay_key):
+        if plotted:
+            self.status_label.config(
+                text=f"Status: {label} plotted with scale factor {float(scale):g}."
+            )
+        else:
+            self.status_label.config(
+                text=f"Status: {label} loaded, but no points are inside the current wavelength range."
+            )
+
+    def _plot_or_refresh_time_trace_overlay(self, overlay_key, redraw=True, warn_if_empty=False):
         """Draw or redraw one stored absorbance overlay on the time-domain axis."""
-        overlay = self.time_trace_overlays[overlay_key]
+        overlay = self.time_trace_overlays.get(overlay_key)
+        if overlay is None:
+            return False
+
         df = overlay.get("data")
         scale = overlay.get("scale")
         if df is None or scale is None:
-            return
+            return False
 
-        # Remove the previous artist before redrawing, especially after axis clears/range changes.
-        old_line = overlay.get("line")
-        if old_line is not None:
-            try:
-                old_line.remove()
-            except ValueError:
-                pass
-            overlay["line"] = None
+        self._remove_time_trace_overlay_artist(overlay_key)
+
+        required_cols = {"Wavelength (nm)", "Absorbance (AU)"}
+        if not required_cols.issubset(set(df.columns)):
+            messagebox.showerror(
+                "CSV Error",
+                f"{overlay['label']} data is missing required columns: Wavelength (nm), Absorbance (AU)."
+            )
+            return False
 
         wavelengths = df["Wavelength (nm)"].to_numpy(dtype=float)
         scaled_absorbance = float(scale) * df["Absorbance (AU)"].to_numpy(dtype=float)
+        valid = np.isfinite(wavelengths) & np.isfinite(scaled_absorbance)
+        wavelengths = wavelengths[valid]
+        scaled_absorbance = scaled_absorbance[valid]
+
+        if wavelengths.size == 0:
+            if warn_if_empty:
+                messagebox.showwarning(
+                    "CSV Warning",
+                    f"{overlay['label']} has no valid numeric wavelength/absorbance points."
+                )
+            return False
 
         mask, wl_range = self._get_time_trace_wavelength_mask(wavelengths)
         if mask is None:
-            return
+            return False
         if not np.any(mask):
-            messagebox.showwarning(
-                "Range Warning",
-                f"{overlay['label']} has no wavelengths inside the selected visible range."
-            )
-            return
+            if warn_if_empty:
+                messagebox.showwarning(
+                    "Range Warning",
+                    f"{overlay['label']} has no wavelengths inside the selected visible range."
+                )
+            return False
 
         (line,) = self.ax_time.plot(
             wavelengths[mask],
@@ -919,24 +1294,38 @@ class PsTAAnalysisApp(tk.Tk):
         visible = self._get_overlay_visible_var(overlay_key).get()
         line.set_visible(visible)
 
-        self._refresh_time_trace_legend()
-        self.fig_time.tight_layout()
-        self.canvas_time.draw()
+        if redraw:
+            self._refresh_time_trace_legend()
+            self.fig_time.tight_layout()
+            self.canvas_time.draw()
+
+        return True
 
     def _refresh_time_trace_overlays(self):
         """Redraw every loaded overlay after the time-domain axis is cleared or replotted."""
         for overlay_key in self.time_trace_overlays:
-            self._plot_or_refresh_time_trace_overlay(overlay_key)
+            self._plot_or_refresh_time_trace_overlay(overlay_key, redraw=False, warn_if_empty=False)
 
     def toggle_time_trace_overlay(self, overlay_key):
         """Show/hide a plotted absorbance overlay without deleting it."""
-        overlay = self.time_trace_overlays[overlay_key]
+        overlay = self.time_trace_overlays.get(overlay_key)
+        if overlay is None:
+            return
+
         line = overlay.get("line")
+
+        # After Clear, Plot, or axis re-creation, the stored data can exist while the
+        # Matplotlib line handle is gone. Recreate it so the checkbox always works.
+        if line is None and overlay.get("data") is not None and overlay.get("scale") is not None:
+            self._plot_or_refresh_time_trace_overlay(overlay_key, redraw=False, warn_if_empty=False)
+            line = overlay.get("line")
+
         if line is None:
             return
 
         line.set_visible(self._get_overlay_visible_var(overlay_key).get())
         self._refresh_time_trace_legend()
+        self.fig_time.tight_layout()
         self.canvas_time.draw()
 
     def _refresh_time_trace_legend(self):
@@ -958,12 +1347,22 @@ class PsTAAnalysisApp(tk.Tk):
 
     def plot_time_slices(self):
         """Plot ΔA vs wavelength for each requested time value (Tab 1)."""
-        if not hasattr(self, 'data') or self.data is None:
-            messagebox.showwarning("No Data", "Load a data file first.")
+        if not self._validate_time_domain_data():
             return
 
         targets = self._parse_slice_values(self.time_slice_var.get(), "time")
         if targets is None:
+            return
+
+        wl_range = self._current_time_domain_wavelength_range()
+        if wl_range is None and getattr(self, "time_trace_wl_range_var", None) is not None:
+            # _current_time_domain_wavelength_range already displays the parse error.
+            range_text = self.time_trace_wl_range_var.get().strip()
+            if range_text:
+                return
+
+        plot_mask = self._time_domain_wavelength_mask(wl_range)
+        if plot_mask is None:
             return
 
         self.ax_time.cla()
@@ -976,39 +1375,31 @@ class PsTAAnalysisApp(tk.Tk):
         cmap = plt.get_cmap("plasma")
         colors = [cmap(i / max(len(targets) - 1, 1)) for i in range(len(targets))]
 
-        wl_range = None
-        if getattr(self, "time_trace_wl_range_var", None) is not None:
-            range_text = self.time_trace_wl_range_var.get().strip()
-            if range_text:
-                wl_range = self._parse_range_values(range_text, "wavelength")
-
-        if wl_range is not None:
-            wl_min, wl_max = wl_range
-            plot_mask = (self.wavelength >= wl_min) & (self.wavelength <= wl_max)
-        else:
-            plot_mask = slice(None)
-
         for t_req, color in zip(targets, colors):
-            idx = int(np.argmin(np.abs(self.times - t_req)))
+            idx = int(np.nanargmin(np.abs(self.times - t_req)))
             t_actual = self.times[idx]
             self.ax_time.plot(
-                self.wavelength[plot_mask], self.data[idx, :][plot_mask],
-                color=color, lw=1.5, label=f"{t_actual:.3g} ps"
+                self.wavelength[plot_mask],
+                self.data[idx, :][plot_mask],
+                color=color,
+                lw=1.5,
+                label=f"{t_actual:.3g} ps"
             )
 
         if wl_range is not None:
             self.ax_time.set_xlim(*wl_range)
             self._autoscale_time_trace_yaxis(wl_range)
         else:
-            self.ax_time.set_xlim(self.wavelength.min(), self.wavelength.max())
-            self._autoscale_time_trace_yaxis((self.wavelength.min(), self.wavelength.max()))
+            full_range = (float(np.nanmin(self.wavelength)), float(np.nanmax(self.wavelength)))
+            self.ax_time.set_xlim(*full_range)
+            self._autoscale_time_trace_yaxis(full_range)
 
         self._refresh_time_trace_overlays()
         self._refresh_time_trace_legend()
         self.fig_time.tight_layout()
         self.canvas_time.draw()
- 
- 
+        self.status_label.config(text="Status: Time-domain traces plotted.")
+
     def plot_wavelength_slices(self):
         """Plot ΔA vs time for each requested wavelength value.
 
@@ -1116,8 +1507,7 @@ class PsTAAnalysisApp(tk.Tk):
 
     def apply_time_trace_wavelength_range(self):
         """Limit the visible wavelength range in the time-domain traces plot only."""
-        if not hasattr(self, 'data') or self.data is None:
-            messagebox.showwarning("No Data", "Load a data file first.")
+        if not self._validate_time_domain_data():
             return
 
         parsed = self._parse_range_values(self.time_trace_wl_range_var.get(), "wavelength")
@@ -1125,31 +1515,32 @@ class PsTAAnalysisApp(tk.Tk):
             return
 
         wl_min, wl_max = parsed
-        self.ax_time.set_xlim(wl_min, wl_max)
-        self._autoscale_time_trace_yaxis((wl_min, wl_max))
-        self._refresh_time_trace_overlays()
-        self._refresh_time_trace_legend()
-        self.fig_time.tight_layout()
-        self.canvas_time.draw()
+        mask = self._time_domain_wavelength_mask((wl_min, wl_max))
+        if mask is None:
+            return
+
+        # Replot instead of only changing axis limits, so time traces, overlays, and
+        # legends are all regenerated from the same range state.
+        self.plot_time_slices()
         self.status_label.config(
             text=f"Status: Time-trace wavelength view set to {wl_min:g} - {wl_max:g} nm."
         )
-
 
     def reset_time_trace_wavelength_range(self):
         """Reset the time-domain traces x-axis to the full wavelength span."""
         if self.wavelength is None:
             return
-        self.time_trace_wl_range_var.set(f"{self.wavelength.min():.4g}, {self.wavelength.max():.4g}")
-        self.ax_time.set_xlim(self.wavelength.min(), self.wavelength.max())
-        self._autoscale_time_trace_yaxis((self.wavelength.min(), self.wavelength.max()))
-        self._refresh_time_trace_overlays()
-        self._refresh_time_trace_legend()
-        self.fig_time.tight_layout()
-        self.canvas_time.draw()
+        self.time_trace_wl_range_var.set(f"{np.nanmin(self.wavelength):.4g}, {np.nanmax(self.wavelength):.4g}")
+
+        if self._validate_time_domain_data():
+            self.plot_time_slices()
+        else:
+            self.ax_time.set_xlim(np.nanmin(self.wavelength), np.nanmax(self.wavelength))
+            self.fig_time.tight_layout()
+            self.canvas_time.draw()
+
         self.status_label.config(text="Status: Time-trace wavelength view reset.")
-    
-    
+
     def _clear_slice_axis(self, ax, canvas, xlabel, ylabel, title):
         """Reset a slice plot to its blank placeholder state."""
         ax.cla()
