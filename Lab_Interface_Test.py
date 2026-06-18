@@ -92,7 +92,6 @@ class PsTAAnalysisApp(tk.Tk):
         self.grid_rowconfigure(1, weight=0)
 
         # Create the Three Major Panels
-        # We use ttk.Frame for a modern look
         self.left_panel = ttk.Frame(self, padding="10")
         self.middle_panel = ttk.Frame(self, padding="10")
         self.right_panel = ttk.Frame(self, padding="10")
@@ -313,17 +312,28 @@ class PsTAAnalysisApp(tk.Tk):
         tab4_controls = ttk.Frame(tab4)
         tab4_controls.pack(fill='x', pady=5)
 
-        ttk.Label(tab4_controls, text="Wavelengths (nm), comma-separated:").pack(side='left', padx=5)
+        # --- Row 1: Wavelength Input ---
+        row1 = ttk.Frame(tab4_controls)
+        row1.pack(side='top', fill='x', pady=2)
+
+        ttk.Label(row1, text="Wavelengths (nm), comma-separated:").pack(side='left', padx=5)
         self.wl_slice_var = tk.StringVar(value="500, 550, 600, 650")
-        ttk.Entry(tab4_controls, textvariable=self.wl_slice_var, width=35).pack(side='left', padx=5)
-        ttk.Label(tab4_controls, text="Average range (+/- nm):").pack(side='left', padx=(10, 5))
+        ttk.Entry(row1, textvariable=self.wl_slice_var, width=35).pack(side='left', padx=5)
+
+        # --- Row 2: Average Range & Buttons ---
+        row2 = ttk.Frame(tab4_controls)
+        row2.pack(side='top', fill='x', pady=2)
+
+        ttk.Label(row2, text="Average range (+/- nm):").pack(side='left', padx=5)
         self.wl_avg_range_var = tk.StringVar(value="0")
-        ttk.Entry(tab4_controls, textvariable=self.wl_avg_range_var, width=8).pack(side='left', padx=5)
+        ttk.Entry(row2, textvariable=self.wl_avg_range_var, width=8).pack(side='left', padx=5)
+        
         ttk.Button(
-            tab4_controls, text="Plot", command=self.plot_wavelength_slices
-        ).pack(side='left', padx=2)
+            row2, text="Plot", command=self.plot_wavelength_slices
+        ).pack(side='left', padx=10)
+        
         ttk.Button(
-            tab4_controls, text="Clear",
+            row2, text="Clear",
             command=lambda: self._clear_slice_axis(
                 self.ax_wl, self.canvas_wl,
                 "Time (ps)", "ΔA", "Wavelength-Domain Traces"
