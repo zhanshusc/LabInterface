@@ -9,6 +9,16 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 
+# Preview of data then select exponentials, see if there's a one size fits all exponential based on a numerical input
+# Giving one exponential or fit until chi square is below 2
+# Give guesses for exponential values for fitting
+# Background: ignore the baselines 
+# Shows the life time and amplitude ratios in the plot, and chi squared as a part of the plot 
+# fancy error functions, A1 A2, amplitutde and life time errors 
+# Amplitude ratios, what is the intensity ratio between A1, A2, and A3 
+
+
+
 # ============================================================
 # SDT loading
 # ============================================================
