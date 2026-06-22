@@ -18,6 +18,11 @@ from tkinter import filedialog, messagebox
 # fancy error functions, A1 A2, amplitutde and life time errors 
 # Amplitude ratios, what is the intensity ratio between A1, A2, and A3 
 
+# https://github.com/PicoQuant/snAPI
+# https://rna-fretools.github.io/Lifefit/
+
+# Scale 
+
 # SDT loading
 
 
@@ -213,9 +218,9 @@ def fit_multi_exp_reconv(
 
     # Offset-normalize the loaded/interpolated IRF so its maximum equals the
     # decay maximum. This is not a scaling factor, every IRF value is shifted by subtracting the max difference.
-    irf, irf_offset_subtracted = normalize_irf_max_to_decay_by_offset(irf, decay)
-    irf = np.maximum(irf, 0.0)
-    print("IRF offset subtracted to match decay max:", irf_offset_subtracted)
+    #irf, irf_offset_subtracted = normalize_irf_max_to_decay_by_offset(irf, decay)
+    #irf = np.maximum(irf, 0.0)
+    #print("IRF offset subtracted to match decay max:", irf_offset_subtracted)
     print("Decay max after loading:", np.max(decay))
     print("IRF max after offset normalization:", np.max(irf))
 
@@ -322,7 +327,7 @@ def fit_multi_exp_reconv(
         "time_ns": time_ns,
         "decay": decay,
         "irf": irf,
-        "irf_offset_subtracted": irf_offset_subtracted,
+        #"irf_offset_subtracted": irf_offset_subtracted,
         "fit": model,
         "residuals": residuals,
         "fit_mask": fit_mask,
@@ -848,7 +853,7 @@ def run_gui_workflow():
             [
                 "",
                 f"Shift IRF [ns]: {fit_result['shift_irf_ns']:.5f}",
-                f"IRF offset subtracted: {fit_result['irf_offset_subtracted']:.5f}",
+                #f"IRF offset subtracted: {fit_result['irf_offset_subtracted']:.5f}",
                 f"Reduced chi-square: {fit_result['reduced_chi2']:.5f}",
                 f"Fitted points: {fit_result['fitted_points']}",
             ]

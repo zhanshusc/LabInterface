@@ -66,6 +66,9 @@ from pathlib import Path
 # 2. Implement new interface features
 # 3. TCSPC functionality reconstruction via python
 # 4. Later Matlab translated into python 
+
+# Use RdBu as color map for matplotlib 
+# Plotly 
 class PsTAAnalysisApp(tk.Tk):
     """
     A Python tkinter application replicating the psTA Analysis Suite layout
