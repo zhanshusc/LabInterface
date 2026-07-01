@@ -2,9 +2,8 @@ import os
 from datetime import datetime
 
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, nnls
 from sdtfile import SdtFile
-from scipy.ndimage import shift
 import matplotlib.pyplot as plt
 
 import tkinter as tk
@@ -12,7 +11,7 @@ from tkinter import filedialog, messagebox
 
 # Preview of data then select exponentials, see if there's a one size fits all exponential based on a numerical input
 # Giving one exponential or fit until chi square is below 2
-# Give guesses for exponential values for fitting
+# Give guesses for exponential values for fitting 
 # Background: ignore the baselines 
 # Shows the life time and amplitude ratios in the plot, and chi squared as a part of the plot 
 # fancy error functions, A1 A2, amplitutde and life time errors 
@@ -62,20 +61,27 @@ def load_sdt_decay(path, block=0):
 
 def shift_curve(y, shift_bins):
     """
-    Fractionally shift a curve using interpolation.
+    Fractionally shift a curve using linear interpolation.
 
     Positive shift_bins shifts the curve to the right.
     Negative shift_bins shifts the curve to the left.
     """
-    x = np.arange(len(y))
+    y = np.asarray(y, dtype=float)
+    x = np.arange(len(y), dtype=float)
     return np.interp(x - shift_bins, x, y, left=0.0, right=0.0)
 
 
 def unpack_multi_exp_params(params, n_exponentials):
     """
+    Backward-compatible parser for the GUI's full parameter list.
+
     Parameter order:
         A1, tau1_ns, A2, tau2_ns, ..., An, taun_ns,
         shift_irf_ns, background_decay, background_irf
+
+    In the LifeFit-style fit below, only tau values and shift_irf_ns are used as
+    nonlinear variables. Amplitudes and the constant decay background are solved
+    by scipy.optimize.nnls at every optimizer step.
     """
     params = np.asarray(params, dtype=float)
     amplitudes = params[0 : 2 * n_exponentials : 2]
@@ -86,45 +92,173 @@ def unpack_multi_exp_params(params, n_exponentials):
     return amplitudes, taus_ns, shift_irf_ns, background_decay, background_irf
 
 
+def full_params_to_lifefit_params(params, n_exponentials):
+    """
+    Convert GUI-style initial parameters to LifeFit-style nonlinear parameters.
+
+    Returned order:
+        tau1_ns, tau2_ns, ..., taun_ns, shift_irf_ns
+    """
+    _, taus_ns, shift_irf_ns, _, _ = unpack_multi_exp_params(params, n_exponentials)
+    return np.r_[taus_ns, shift_irf_ns].astype(float)
+
+
+def unpack_lifefit_params(params, n_exponentials):
+    """
+    LifeFit-style nonlinear parameter order:
+        tau1_ns, tau2_ns, ..., taun_ns, shift_irf_ns
+    """
+    params = np.asarray(params, dtype=float)
+    taus_ns = params[:n_exponentials]
+    shift_irf_ns = float(params[n_exponentials])
+    return taus_ns, shift_irf_ns
+
+
+def lifefit_bounds_from_full_bounds(n_exponentials):
+    """
+    Bounds for the LifeFit-style nonlinear variables.
+    Amplitudes and background do not need bounds because NNLS enforces x >= 0.
+    """
+    lower = [0.01] * n_exponentials + [-5.0]
+    upper = [100.0] * n_exponentials + [5.0]
+    return np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+
+
+def single_exponential(time_ns, tau_ns):
+    """LifeFit-style single exponential: exp(-t / tau)."""
+    time_ns = np.asarray(time_ns, dtype=float)
+    tau_ns = max(float(tau_ns), np.finfo(float).tiny)
+    return np.exp(-time_ns / tau_ns)
+
+
+def fft_convolution(irf, sgl_exp):
+    """
+    FFT convolution used by LifeFit's reconvolution workflow.
+
+    The result has the same length as the input arrays. This circular FFT form
+    follows the package's documented ifft(fft(exp) * fft(irf)) calculation.
+    """
+    irf = np.asarray(irf, dtype=float)
+    sgl_exp = np.asarray(sgl_exp, dtype=float)
+    return np.real(np.fft.ifft(np.fft.fft(sgl_exp) * np.fft.fft(irf)))
+
+
+def build_lifefit_design_matrix(time_ns, irf, taus_ns, shift_irf_ns, dt):
+    """
+    Build LifeFit's NNLS design matrix.
+
+    Columns 0..n-1 are IRF-convolved single-exponential decays.
+    Final column is ones for the constant decay background.
+    """
+    time_ns = np.asarray(time_ns, dtype=float)
+    irf = np.asarray(irf, dtype=float)
+    taus_ns = np.asarray(taus_ns, dtype=float)
+
+    shifted_irf = shift_curve(irf, shift_irf_ns / dt)
+    t = time_ns - time_ns[0]
+
+    columns = []
+    for tau_ns in taus_ns:
+        sgl_exp = single_exponential(t, tau_ns)
+        columns.append(fft_convolution(shifted_irf, sgl_exp))
+
+    columns.append(np.ones_like(time_ns, dtype=float))
+    return np.column_stack(columns), shifted_irf
+
+
+def solve_lifefit_nnls(time_ns, decay, irf, taus_ns, shift_irf_ns, dt, fit_mask=None, sigma=None):
+    """
+    Solve LifeFit's linear subproblem for fixed lifetimes and IRF shift.
+
+    Returns:
+        model, amplitudes, background_decay, shifted_irf, nnls_residual_norm
+    """
+    decay = np.asarray(decay, dtype=float)
+    A_full, shifted_irf = build_lifefit_design_matrix(
+        time_ns=time_ns,
+        irf=irf,
+        taus_ns=taus_ns,
+        shift_irf_ns=shift_irf_ns,
+        dt=dt,
+    )
+
+    if fit_mask is None:
+        fit_mask = np.ones_like(decay, dtype=bool)
+
+    A_fit = A_full[fit_mask]
+    y_fit = decay[fit_mask]
+
+    if sigma is not None:
+        sigma_fit = np.asarray(sigma, dtype=float)[fit_mask]
+        sigma_fit = np.maximum(sigma_fit, np.finfo(float).eps)
+        A_fit = A_fit / sigma_fit[:, None]
+        y_fit = y_fit / sigma_fit
+
+    coeffs, nnls_residual_norm = nnls(A_fit, y_fit)
+    model = A_full @ coeffs
+    amplitudes = coeffs[:-1]
+    background_decay = float(coeffs[-1])
+
+    return model, amplitudes, background_decay, shifted_irf, nnls_residual_norm
+
+
 def reconvolved_multi_exp(params, time_ns, irf, dt, n_exponentials):
     """
-    Multi-exponential reconvolution model.
+    Backward-compatible reconvolution model using supplied amplitudes/background.
 
-    The number of exponentials is controlled by n_exponentials, so the same
-    function supports 1, 2, 3, 4, or more exponentials.
+    The main fit path no longer optimizes these amplitudes nonlinearly; it uses
+    solve_lifefit_nnls instead. This helper remains available for plotting or
+    comparing a manually supplied full parameter vector.
     """
     amplitudes, taus_ns, shift_irf_ns, background_decay, background_irf = (
         unpack_multi_exp_params(params, n_exponentials)
     )
+    A_full, _ = build_lifefit_design_matrix(
+        time_ns=time_ns,
+        irf=irf + background_irf,
+        taus_ns=taus_ns,
+        shift_irf_ns=shift_irf_ns,
+        dt=dt,
+    )
+    coeffs = np.r_[amplitudes, background_decay]
+    return A_full @ coeffs
 
-    shift_bins = shift_irf_ns / dt
-    shifted_irf = shift_curve(irf + background_irf, shift_bins)
 
-    t0 = time_ns[0]
-    time_from_start = time_ns - t0
-    pure_decay = np.zeros_like(time_ns, dtype=float)
+def lifefit_residuals(params, time_ns, decay, irf, dt, fit_mask, n_exponentials, sigma=None):
+    taus_ns, shift_irf_ns = unpack_lifefit_params(params, n_exponentials)
+    model, _, _, _, _ = solve_lifefit_nnls(
+        time_ns=time_ns,
+        decay=decay,
+        irf=irf,
+        taus_ns=taus_ns,
+        shift_irf_ns=shift_irf_ns,
+        dt=dt,
+        fit_mask=fit_mask,
+        sigma=sigma,
+    )
 
-    for amplitude, tau_ns in zip(amplitudes, taus_ns):
-        pure_decay += amplitude * np.exp(-time_from_start / tau_ns)
-
-    pure_decay[time_ns < t0] = 0.0
-
-    model = np.convolve(shifted_irf, pure_decay, mode="full")[: len(time_ns)]
-
-    irf_area = shifted_irf.sum()
-    if irf_area > 0:
-        model = model / irf_area
-
-    return model + background_decay
+    residual = decay[fit_mask] - model[fit_mask]
+    if sigma is not None:
+        sigma_fit = np.maximum(np.asarray(sigma, dtype=float)[fit_mask], np.finfo(float).eps)
+        residual = residual / sigma_fit
+    return residual
 
 
 def poisson_residuals(params, time_ns, decay, irf, dt, fit_mask, n_exponentials):
-    model = reconvolved_multi_exp(params, time_ns, irf, dt, n_exponentials)
-
-    # Poisson weighting, common for TCSPC counts.
+    """
+    Compatibility wrapper: LifeFit-style residuals with Poisson sigma.
+    """
     sigma = np.sqrt(np.maximum(decay, 1.0))
-
-    return (decay[fit_mask] - model[fit_mask]) / sigma[fit_mask]
+    return lifefit_residuals(
+        params=full_params_to_lifefit_params(params, n_exponentials),
+        time_ns=time_ns,
+        decay=decay,
+        irf=irf,
+        dt=dt,
+        fit_mask=fit_mask,
+        n_exponentials=n_exponentials,
+        sigma=sigma,
+    )
 
 
 # Fitting workflow
@@ -173,19 +307,27 @@ def make_bounds(n_exponentials):
 
 def normalize_irf_max_to_decay_by_offset(irf, decay):
     """
-    Offset-normalize the IRF so its maximum equals the decay maximum.
+    Scale-normalize the IRF so its maximum equals the decay maximum.
 
-    This intentionally does not scale the IRF. It subtracts the difference
-    between the IRF max and decay max from every IRF value:
-        normalized_irf = irf - (max(irf) - max(decay))
+    This uses proportional scaling, not flat offset subtraction:
+        normalized_irf = irf * (max(decay) / max(irf))
+
+    Returns:
+        normalized_irf, scale_factor
     """
     irf = np.asarray(irf, dtype=float)
     decay = np.asarray(decay, dtype=float)
 
-    max_difference = float(np.max(irf) - np.max(decay))
-    normalized_irf = irf - max_difference
+    irf_max = float(np.max(irf))
+    decay_max = float(np.max(decay))
 
-    return normalized_irf, max_difference
+    if irf_max <= 0:
+        raise ValueError("Cannot normalize IRF because its maximum is zero or negative.")
+
+    scale_factor = decay_max / irf_max
+    normalized_irf = irf * scale_factor
+
+    return normalized_irf, scale_factor
 
 
 def fit_multi_exp_reconv(
@@ -197,6 +339,7 @@ def fit_multi_exp_reconv(
     fit_start_ns=5,
     fit_end_ns=48,
     initial_params=None,
+    use_poisson_weights=False,
 ):
     n_exponentials = int(n_exponentials)
     if n_exponentials < 1:
@@ -218,9 +361,9 @@ def fit_multi_exp_reconv(
 
     # Offset-normalize the loaded/interpolated IRF so its maximum equals the
     # decay maximum. This is not a scaling factor, every IRF value is shifted by subtracting the max difference.
-    #irf, irf_offset_subtracted = normalize_irf_max_to_decay_by_offset(irf, decay)
-    #irf = np.maximum(irf, 0.0)
-    #print("IRF offset subtracted to match decay max:", irf_offset_subtracted)
+    irf, irf_scale_factor = normalize_irf_max_to_decay_by_offset(irf, decay)
+    irf = np.maximum(irf, 0.0)
+    print("IRF scale factor to match decay max:", irf_scale_factor)
     print("Decay max after loading:", np.max(decay))
     print("IRF max after offset normalization:", np.max(irf))
 
@@ -250,6 +393,9 @@ def fit_multi_exp_reconv(
                 f"{n_exponentials} exponentials, but received {p0.size}."
             )
 
+    # Validate the full GUI-style initial vector, then convert it to LifeFit's
+    # nonlinear vector: tau1..taun and IRF shift. Amplitudes/background are not
+    # nonlinear fit variables; they are re-solved by NNLS at every trial.
     lower_bounds, upper_bounds = make_bounds(n_exponentials)
     lower_bounds_arr = np.asarray(lower_bounds, dtype=float)
     upper_bounds_arr = np.asarray(upper_bounds, dtype=float)
@@ -260,44 +406,49 @@ def fit_multi_exp_reconv(
             "IRF shift between -5 and 5 ns, and non-negative backgrounds."
         )
 
+    nonlinear_p0 = full_params_to_lifefit_params(p0, n_exponentials)
+    nonlinear_lower, nonlinear_upper = lifefit_bounds_from_full_bounds(n_exponentials)
+
+    sigma = np.sqrt(np.maximum(decay, 1.0)) if use_poisson_weights else None
+
     result = least_squares(
-        poisson_residuals,
-        p0,
-        bounds=(lower_bounds, upper_bounds),
-        args=(time_ns, decay, irf, dt, fit_mask, n_exponentials),
-        loss ='soft_l1',
+        lifefit_residuals,
+        nonlinear_p0,
+        bounds=(nonlinear_lower, nonlinear_upper),
+        args=(time_ns, decay, irf, dt, fit_mask, n_exponentials, sigma),
+        loss="linear",
         max_nfev=20000,
         ftol=1e-8,
-        xtol=1e-8
-    )
-    # result = least_squares(
-    #    poisson_residuals,
-    #    p0,
-    #    method = 'lm',`    `
-    #    bounds=(lower_bounds, upper_bounds),
-    #    args=(time_ns, decay, irf, dt, fit_mask, n_exponentials),
-    #    max_nfev=20000,
-    #    ftol=1e-8,
-    #    xtol=1e-8
-    # )
-
-    params = result.x
-    amplitudes, taus_ns, shift_irf_ns, bg_decay, bg_irf = unpack_multi_exp_params(
-        params, n_exponentials
+        xtol=1e-8,
+        gtol=1e-8,
     )
 
-    model = reconvolved_multi_exp(params, time_ns, irf, dt, n_exponentials)
+    nonlinear_params = result.x
+    taus_ns, shift_irf_ns = unpack_lifefit_params(nonlinear_params, n_exponentials)
+
+    model, amplitudes, bg_decay, shifted_irf, nnls_residual_norm = solve_lifefit_nnls(
+        time_ns=time_ns,
+        decay=decay,
+        irf=irf,
+        taus_ns=taus_ns,
+        shift_irf_ns=shift_irf_ns,
+        dt=dt,
+        fit_mask=fit_mask,
+        sigma=sigma,
+    )
+    bg_irf = 0.0
 
     full_mask = np.ones_like(time_ns, dtype=bool)
-    residuals = poisson_residuals(
-        params, time_ns, decay, irf, dt, full_mask, n_exponentials
+    residuals = lifefit_residuals(
+        nonlinear_params, time_ns, decay, irf, dt, full_mask, n_exponentials, sigma
     )
 
-    fit_residuals = poisson_residuals(
-        params, time_ns, decay, irf, dt, fit_mask, n_exponentials
+    fit_residuals = lifefit_residuals(
+        nonlinear_params, time_ns, decay, irf, dt, fit_mask, n_exponentials, sigma
     )
     n_fit_points = int(fit_mask.sum())
-    n_params = len(params)
+    # Degrees of freedom include nonlinear parameters plus NNLS linear coefficients.
+    n_params = len(nonlinear_params) + len(amplitudes) + 1
 
     reduced_chi2 = np.sum(fit_residuals ** 2) / max(n_fit_points - n_params, 1)
 
@@ -327,12 +478,17 @@ def fit_multi_exp_reconv(
         "time_ns": time_ns,
         "decay": decay,
         "irf": irf,
+        "shifted_irf": shifted_irf,
         #"irf_offset_subtracted": irf_offset_subtracted,
         "fit": model,
         "residuals": residuals,
         "fit_mask": fit_mask,
         "n_exponentials": n_exponentials,
         "initial_params": p0.copy(),
+        "nonlinear_params": nonlinear_params.copy(),
+        "nnls_residual_norm": nnls_residual_norm,
+        "fit_method": "LifeFit-style NNLS reconvolution",
+        "use_poisson_weights": use_poisson_weights,
         "amplitudes_counts": amplitudes,
         "taus_ns": taus_ns,
         "amplitude_fractions": amplitude_fractions,
@@ -379,7 +535,7 @@ def write_fluofit_style_dat(
     irf_name = os.path.basename(irf_sdt_path)
 
     if title is None:
-        title = f"Python {n_exponentials}-exponential reconvolution fit"
+        title = f"Python LifeFit-style {n_exponentials}-exponential reconvolution fit"
 
     now = datetime.now().strftime("%m/%d/%Y %I:%M:%S %p")
 
@@ -390,7 +546,7 @@ def write_fluofit_style_dat(
     lines.append("")
     lines.append(title)
     lines.append("")
-    lines.append(f"Model: Exp. [Reconv.] ({n_exponentials} Exponential Components)")
+    lines.append(f"Model: Exp. [Reconv.] NNLS ({n_exponentials} Exponential Components)")
     lines.append("Plotted Data Set #0 Decay:")
     lines.append(f'"{decay_name}" (0)')
     lines.append("Plotted Data Set #0 IRF:")
@@ -834,7 +990,7 @@ def run_gui_workflow():
         msg_lines.append(f"Initial background IRF [Cnts]: {initial_bg_irf:.5f}")
 
         msg_lines.append("")
-        msg_lines.append("Fitted parameters:")
+        msg_lines.append("Fitted parameters (LifeFit-style NNLS amplitudes/background):")
         for idx, (amplitude, tau_ns, amp_frac, int_frac) in enumerate(
             zip(
                 fit_result["amplitudes_counts"],
