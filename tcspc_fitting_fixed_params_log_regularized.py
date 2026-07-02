@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from types import SimpleNamespace
 
 import numpy as np
 from scipy.optimize import least_squares, nnls
@@ -124,6 +125,61 @@ def lifefit_bounds_from_full_bounds(n_exponentials):
     return np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
 
 
+
+
+def full_fixed_mask_to_lifefit_fixed_mask(fixed_params, n_exponentials):
+    """
+    Convert a full GUI-style fixed-parameter mask into the LifeFit nonlinear mask.
+
+    Full GUI parameter order:
+        A1, tau1, A2, tau2, ..., An, taun, shift_irf, background_decay, background_irf
+
+    LifeFit nonlinear order:
+        tau1, tau2, ..., taun, shift_irf
+
+    True means that parameter is fixed at the user's initial value.
+    """
+    if fixed_params is None:
+        return np.zeros(n_exponentials + 1, dtype=bool)
+
+    fixed_params = np.asarray(fixed_params, dtype=bool)
+    expected_param_count = 2 * n_exponentials + 3
+    if fixed_params.size != expected_param_count:
+        raise ValueError(
+            f"Expected {expected_param_count} fixed-parameter flags for "
+            f"{n_exponentials} exponentials, but received {fixed_params.size}."
+        )
+
+    tau_fixed = fixed_params[1 : 2 * n_exponentials : 2]
+    shift_fixed = fixed_params[2 * n_exponentials]
+    return np.r_[tau_fixed, shift_fixed].astype(bool)
+
+
+def expand_free_lifefit_params(free_params, fixed_values, fixed_mask):
+    """
+    Rebuild the full LifeFit nonlinear vector from free optimizer variables.
+    """
+    fixed_values = np.asarray(fixed_values, dtype=float)
+    fixed_mask = np.asarray(fixed_mask, dtype=bool)
+    full = fixed_values.copy()
+    full[~fixed_mask] = np.asarray(free_params, dtype=float)
+    return full
+
+
+def lifefit_full_to_free_params(full_params, fixed_mask):
+    """
+    Extract only the non-fixed nonlinear parameters for scipy.optimize.least_squares.
+    """
+    return np.asarray(full_params, dtype=float)[~np.asarray(fixed_mask, dtype=bool)]
+
+
+def lifefit_free_bounds(lower, upper, fixed_mask):
+    """
+    Extract bounds for the non-fixed nonlinear parameters.
+    """
+    fixed_mask = np.asarray(fixed_mask, dtype=bool)
+    return np.asarray(lower, dtype=float)[~fixed_mask], np.asarray(upper, dtype=float)[~fixed_mask]
+
 def single_exponential(time_ns, tau_ns):
     """LifeFit-style single exponential: exp(-t / tau)."""
     time_ns = np.asarray(time_ns, dtype=float)
@@ -134,6 +190,9 @@ def single_exponential(time_ns, tau_ns):
 def fft_convolution(irf, sgl_exp):
     """
     FFT convolution used by LifeFit's reconvolution workflow.
+
+    The result has the same length as the input arrays. This circular FFT form
+    follows the package's documented ifft(fft(exp) * fft(irf)) calculation.
     """
     irf = np.asarray(irf, dtype=float)
     sgl_exp = np.asarray(sgl_exp, dtype=float)
@@ -141,9 +200,12 @@ def fft_convolution(irf, sgl_exp):
 
 
 def build_lifefit_design_matrix(time_ns, irf, taus_ns, shift_irf_ns, dt):
+    """
+    Build LifeFit's NNLS design matrix.
 
-    #Build LifeFit's NNLS design matrix.
-    
+    Columns 0..n-1 are IRF-convolved single-exponential decays.
+    Final column is ones for the constant decay background.
+    """
     time_ns = np.asarray(time_ns, dtype=float)
     irf = np.asarray(irf, dtype=float)
     taus_ns = np.asarray(taus_ns, dtype=float)
@@ -160,14 +222,36 @@ def build_lifefit_design_matrix(time_ns, irf, taus_ns, shift_irf_ns, dt):
     return np.column_stack(columns), shifted_irf
 
 
-def solve_lifefit_nnls(time_ns, decay, irf, taus_ns, shift_irf_ns, dt, fit_mask=None, sigma=None):
+def solve_lifefit_nnls(
+    time_ns,
+    decay,
+    irf,
+    taus_ns,
+    shift_irf_ns,
+    dt,
+    fit_mask=None,
+    sigma=None,
+    fixed_amplitude_mask=None,
+    fixed_amplitude_values=None,
+    fixed_background_decay=False,
+    fixed_background_decay_value=0.0,
+):
     """
     Solve LifeFit's linear subproblem for fixed lifetimes and IRF shift.
 
+    Amplitudes and the constant decay background are normally solved by NNLS.
+    If the user checks "Fix" for an amplitude or background decay, that value is
+    held at the initial estimate and the NNLS fit is done on the remaining linear
+    coefficients only.
+
     Returns:
-        model, amplitudes, background_decay, shifted_irf, nnls_residual_norm
+        model, amplitudes, background_decay, shifted_irf, nnls_residual_norm,
+        variable_linear_count
     """
     decay = np.asarray(decay, dtype=float)
+    taus_ns = np.asarray(taus_ns, dtype=float)
+    n_exponentials = len(taus_ns)
+
     A_full, shifted_irf = build_lifefit_design_matrix(
         time_ns=time_ns,
         irf=irf,
@@ -179,8 +263,37 @@ def solve_lifefit_nnls(time_ns, decay, irf, taus_ns, shift_irf_ns, dt, fit_mask=
     if fit_mask is None:
         fit_mask = np.ones_like(decay, dtype=bool)
 
-    A_fit = A_full[fit_mask]
-    y_fit = decay[fit_mask]
+    if fixed_amplitude_mask is None:
+        fixed_amplitude_mask = np.zeros(n_exponentials, dtype=bool)
+    else:
+        fixed_amplitude_mask = np.asarray(fixed_amplitude_mask, dtype=bool)
+
+    if fixed_amplitude_values is None:
+        fixed_amplitude_values = np.zeros(n_exponentials, dtype=float)
+    else:
+        fixed_amplitude_values = np.asarray(fixed_amplitude_values, dtype=float)
+
+    if fixed_amplitude_mask.size != n_exponentials:
+        raise ValueError("fixed_amplitude_mask must have one entry per exponential.")
+    if fixed_amplitude_values.size != n_exponentials:
+        raise ValueError("fixed_amplitude_values must have one entry per exponential.")
+
+    fixed_coeffs = np.zeros(n_exponentials + 1, dtype=float)
+    linear_fixed_mask = np.zeros(n_exponentials + 1, dtype=bool)
+
+    linear_fixed_mask[:n_exponentials] = fixed_amplitude_mask
+    fixed_coeffs[:n_exponentials] = np.where(fixed_amplitude_mask, fixed_amplitude_values, 0.0)
+
+    linear_fixed_mask[-1] = bool(fixed_background_decay)
+    fixed_coeffs[-1] = float(fixed_background_decay_value) if fixed_background_decay else 0.0
+
+    fixed_contribution_full = A_full @ fixed_coeffs
+    y_remaining_full = decay - fixed_contribution_full
+
+    A_fit_all = A_full[fit_mask]
+    y_fit = y_remaining_full[fit_mask]
+    free_linear_mask = ~linear_fixed_mask
+    A_fit = A_fit_all[:, free_linear_mask]
 
     if sigma is not None:
         sigma_fit = np.asarray(sigma, dtype=float)[fit_mask]
@@ -188,13 +301,19 @@ def solve_lifefit_nnls(time_ns, decay, irf, taus_ns, shift_irf_ns, dt, fit_mask=
         A_fit = A_fit / sigma_fit[:, None]
         y_fit = y_fit / sigma_fit
 
-    coeffs, nnls_residual_norm = nnls(A_fit, y_fit)
+    coeffs = fixed_coeffs.copy()
+    if A_fit.shape[1] > 0:
+        free_coeffs, nnls_residual_norm = nnls(A_fit, y_fit)
+        coeffs[free_linear_mask] = free_coeffs
+    else:
+        nnls_residual_norm = float(np.linalg.norm(y_fit))
+
     model = A_full @ coeffs
     amplitudes = coeffs[:-1]
     background_decay = float(coeffs[-1])
+    variable_linear_count = int(np.sum(free_linear_mask))
 
-    return model, amplitudes, background_decay, shifted_irf, nnls_residual_norm
-
+    return model, amplitudes, background_decay, shifted_irf, nnls_residual_norm, variable_linear_count
 
 def reconvolved_multi_exp(params, time_ns, irf, dt, n_exponentials):
     """
@@ -218,9 +337,22 @@ def reconvolved_multi_exp(params, time_ns, irf, dt, n_exponentials):
     return A_full @ coeffs
 
 
-def lifefit_residuals(params, time_ns, decay, irf, dt, fit_mask, n_exponentials, sigma=None):
+def lifefit_residuals(
+    params,
+    time_ns,
+    decay,
+    irf,
+    dt,
+    fit_mask,
+    n_exponentials,
+    sigma=None,
+    fixed_amplitude_mask=None,
+    fixed_amplitude_values=None,
+    fixed_background_decay=False,
+    fixed_background_decay_value=0.0,
+):
     taus_ns, shift_irf_ns = unpack_lifefit_params(params, n_exponentials)
-    model, _, _, _, _ = solve_lifefit_nnls(
+    model, _, _, _, _, _ = solve_lifefit_nnls(
         time_ns=time_ns,
         decay=decay,
         irf=irf,
@@ -229,6 +361,10 @@ def lifefit_residuals(params, time_ns, decay, irf, dt, fit_mask, n_exponentials,
         dt=dt,
         fit_mask=fit_mask,
         sigma=sigma,
+        fixed_amplitude_mask=fixed_amplitude_mask,
+        fixed_amplitude_values=fixed_amplitude_values,
+        fixed_background_decay=fixed_background_decay,
+        fixed_background_decay_value=fixed_background_decay_value,
     )
 
     residual = decay[fit_mask] - model[fit_mask]
@@ -236,6 +372,43 @@ def lifefit_residuals(params, time_ns, decay, irf, dt, fit_mask, n_exponentials,
         sigma_fit = np.maximum(np.asarray(sigma, dtype=float)[fit_mask], np.finfo(float).eps)
         residual = residual / sigma_fit
     return residual
+
+
+def lifefit_free_residuals(
+    free_params,
+    fixed_nonlinear_values,
+    fixed_nonlinear_mask,
+    time_ns,
+    decay,
+    irf,
+    dt,
+    fit_mask,
+    n_exponentials,
+    sigma=None,
+    fixed_amplitude_mask=None,
+    fixed_amplitude_values=None,
+    fixed_background_decay=False,
+    fixed_background_decay_value=0.0,
+):
+    full_params = expand_free_lifefit_params(
+        free_params=free_params,
+        fixed_values=fixed_nonlinear_values,
+        fixed_mask=fixed_nonlinear_mask,
+    )
+    return lifefit_residuals(
+        params=full_params,
+        time_ns=time_ns,
+        decay=decay,
+        irf=irf,
+        dt=dt,
+        fit_mask=fit_mask,
+        n_exponentials=n_exponentials,
+        sigma=sigma,
+        fixed_amplitude_mask=fixed_amplitude_mask,
+        fixed_amplitude_values=fixed_amplitude_values,
+        fixed_background_decay=fixed_background_decay,
+        fixed_background_decay_value=fixed_background_decay_value,
+    )
 
 
 def poisson_residuals(params, time_ns, decay, irf, dt, fit_mask, n_exponentials):
@@ -324,6 +497,34 @@ def normalize_irf_max_to_decay_by_offset(irf, decay):
     return normalized_irf, scale_factor
 
 
+
+
+def regularize_decay_min_one(decay):
+    """
+    Optional decay regularization to set min to 1 or 10^0 to match tcspc outputs
+
+    """
+    decay = np.asarray(decay, dtype=float)
+    decay_min = float(np.min(decay))
+    print(decay_min)
+    
+    # Safety check: Prevent division by zero if the minimum is exactly 0
+    if decay_min == 0:
+        raise ValueError("The minimum decay value is 0. Cannot scale by a ratio to 1.")
+        
+    # Apply the ratio to all values
+    regularized_decay = decay / decay_min
+    
+    info = {
+        "enabled": True,
+        "original_min": decay_min,
+        "original_max": float(np.max(decay)),
+        "regularized_min": float(np.min(regularized_decay)),
+        "regularized_max": float(np.max(regularized_decay)),
+        "method": "divided by original minimum (ratio scaling)",
+    }
+    return regularized_decay, info
+
 def fit_multi_exp_reconv(
     decay_sdt_path,
     irf_sdt_path,
@@ -333,6 +534,7 @@ def fit_multi_exp_reconv(
     fit_start_ns=5,
     fit_end_ns=48,
     initial_params=None,
+    fixed_params=None,
     use_poisson_weights=False,
 ):
     n_exponentials = int(n_exponentials)
@@ -353,8 +555,18 @@ def fit_multi_exp_reconv(
     if len(irf_time_ns) != len(time_ns) or not np.allclose(irf_time_ns, time_ns):
         irf = np.interp(time_ns, irf_time_ns, irf, left=0.0, right=0.0)
 
-    # Offset-normalize the loaded/interpolated IRF so its maximum equals the
-    # decay maximum. This is not a scaling factor, every IRF value is shifted by subtracting the max difference.
+    decay_raw = decay.copy()
+    decay_regularization_info = {"enabled": False}
+
+    # --------------------------------
+    # Comment out the next line to fit the original raw decay instead.
+    #------------------------------
+
+    #decay, decay_regularization_info = regularize_decay_min_one(decay)SS
+
+
+    # Scale-normalize the loaded/interpolated IRF so its maximum equals the
+    # current decay maximum using proportional scaling.
     irf, irf_scale_factor = normalize_irf_max_to_decay_by_offset(irf, decay)
     irf = np.maximum(irf, 0.0)
     print("IRF scale factor to match decay max:", irf_scale_factor)
@@ -387,9 +599,18 @@ def fit_multi_exp_reconv(
                 f"{n_exponentials} exponentials, but received {p0.size}."
             )
 
+    if fixed_params is None:
+        fixed_params = np.zeros_like(p0, dtype=bool)
+    else:
+        fixed_params = np.asarray(fixed_params, dtype=bool)
+        if fixed_params.size != p0.size:
+            raise ValueError(
+                f"Expected {p0.size} fixed-parameter flags, but received {fixed_params.size}."
+            )
+
     # Validate the full GUI-style initial vector, then convert it to LifeFit's
     # nonlinear vector: tau1..taun and IRF shift. Amplitudes/background are not
-    # nonlinear fit variables; they are re-solved by NNLS at every trial.
+    # nonlinear fit variables; they are re-solved by NNLS unless checked as fixed.
     lower_bounds, upper_bounds = make_bounds(n_exponentials)
     lower_bounds_arr = np.asarray(lower_bounds, dtype=float)
     upper_bounds_arr = np.asarray(upper_bounds, dtype=float)
@@ -402,47 +623,117 @@ def fit_multi_exp_reconv(
 
     nonlinear_p0 = full_params_to_lifefit_params(p0, n_exponentials)
     nonlinear_lower, nonlinear_upper = lifefit_bounds_from_full_bounds(n_exponentials)
+    fixed_nonlinear_mask = full_fixed_mask_to_lifefit_fixed_mask(fixed_params, n_exponentials)
+
+    initial_amplitudes, _, _, initial_bg_decay, initial_bg_irf = unpack_multi_exp_params(
+        p0, n_exponentials
+    )
+    fixed_amplitude_mask = np.asarray(fixed_params[0 : 2 * n_exponentials : 2], dtype=bool)
+    fixed_background_decay = bool(fixed_params[2 * n_exponentials + 1])
+    fixed_background_irf = bool(fixed_params[2 * n_exponentials + 2])
+    fixed_background_irf_value = float(initial_bg_irf) if fixed_background_irf else 0.0
+
+    # Background IRF is not independently identifiable in the NNLS subproblem here.
+    # When checked as fixed, it is added to the IRF before reconvolution. When it
+    # is not checked, the existing behavior is preserved: background_irf = 0.
+    irf_for_fit = irf + fixed_background_irf_value
+
+    free_nonlinear_p0 = lifefit_full_to_free_params(nonlinear_p0, fixed_nonlinear_mask)
+    free_lower, free_upper = lifefit_free_bounds(
+        nonlinear_lower, nonlinear_upper, fixed_nonlinear_mask
+    )
 
     sigma = np.sqrt(np.maximum(decay, 1.0)) if use_poisson_weights else None
 
-    result = least_squares(
-        lifefit_residuals,
-        nonlinear_p0,
-        bounds=(nonlinear_lower, nonlinear_upper),
-        args=(time_ns, decay, irf, dt, fit_mask, n_exponentials, sigma),
-        loss="linear",
-        max_nfev=20000,
-        ftol=1e-8,
-        xtol=1e-8,
-        gtol=1e-8,
-    )
-
-    nonlinear_params = result.x
+    if free_nonlinear_p0.size > 0:
+        result = least_squares(
+            lifefit_free_residuals,
+            free_nonlinear_p0,
+            bounds=(free_lower, free_upper),
+            args=(
+                nonlinear_p0,
+                fixed_nonlinear_mask,
+                time_ns,
+                decay,
+                irf_for_fit,
+                dt,
+                fit_mask,
+                n_exponentials,
+                sigma,
+                fixed_amplitude_mask,
+                initial_amplitudes,
+                fixed_background_decay,
+                initial_bg_decay,
+            ),
+            loss="linear",
+            max_nfev=20000,
+            ftol=1e-8,
+            xtol=1e-8,
+            gtol=1e-8,
+        )
+        nonlinear_params = expand_free_lifefit_params(
+            free_params=result.x,
+            fixed_values=nonlinear_p0,
+            fixed_mask=fixed_nonlinear_mask,
+        )
+    else:
+        nonlinear_params = nonlinear_p0.copy()
+        result = SimpleNamespace(
+            x=np.asarray([], dtype=float),
+            success=True,
+            message="All nonlinear parameters were fixed; skipped least_squares.",
+        )
     taus_ns, shift_irf_ns = unpack_lifefit_params(nonlinear_params, n_exponentials)
 
-    model, amplitudes, bg_decay, shifted_irf, nnls_residual_norm = solve_lifefit_nnls(
+    model, amplitudes, bg_decay, shifted_irf, nnls_residual_norm, variable_linear_count = solve_lifefit_nnls(
         time_ns=time_ns,
         decay=decay,
-        irf=irf,
+        irf=irf_for_fit,
         taus_ns=taus_ns,
         shift_irf_ns=shift_irf_ns,
         dt=dt,
         fit_mask=fit_mask,
         sigma=sigma,
+        fixed_amplitude_mask=fixed_amplitude_mask,
+        fixed_amplitude_values=initial_amplitudes,
+        fixed_background_decay=fixed_background_decay,
+        fixed_background_decay_value=initial_bg_decay,
     )
-    bg_irf = 0.0
+    bg_irf = fixed_background_irf_value
 
     full_mask = np.ones_like(time_ns, dtype=bool)
     residuals = lifefit_residuals(
-        nonlinear_params, time_ns, decay, irf, dt, full_mask, n_exponentials, sigma
+        nonlinear_params,
+        time_ns,
+        decay,
+        irf_for_fit,
+        dt,
+        full_mask,
+        n_exponentials,
+        sigma,
+        fixed_amplitude_mask,
+        initial_amplitudes,
+        fixed_background_decay,
+        initial_bg_decay,
     )
 
     fit_residuals = lifefit_residuals(
-        nonlinear_params, time_ns, decay, irf, dt, fit_mask, n_exponentials, sigma
+        nonlinear_params,
+        time_ns,
+        decay,
+        irf_for_fit,
+        dt,
+        fit_mask,
+        n_exponentials,
+        sigma,
+        fixed_amplitude_mask,
+        initial_amplitudes,
+        fixed_background_decay,
+        initial_bg_decay,
     )
     n_fit_points = int(fit_mask.sum())
-    # Degrees of freedom include nonlinear parameters plus NNLS linear coefficients.
-    n_params = len(nonlinear_params) + len(amplitudes) + 1
+    # Degrees of freedom count only free fitted variables, not fixed user values.
+    n_params = int(np.sum(~fixed_nonlinear_mask)) + int(variable_linear_count)
 
     reduced_chi2 = np.sum(fit_residuals ** 2) / max(n_fit_points - n_params, 1)
 
@@ -471,7 +762,9 @@ def fit_multi_exp_reconv(
     return {
         "time_ns": time_ns,
         "decay": decay,
-        "irf": irf,
+        "decay_raw": decay_raw,
+        "decay_regularization_info": decay_regularization_info,
+        "irf": irf_for_fit,
         "shifted_irf": shifted_irf,
         #"irf_offset_subtracted": irf_offset_subtracted,
         "fit": model,
@@ -480,6 +773,8 @@ def fit_multi_exp_reconv(
         "n_exponentials": n_exponentials,
         "initial_params": p0.copy(),
         "nonlinear_params": nonlinear_params.copy(),
+        "fixed_params": fixed_params.copy(),
+        "fixed_nonlinear_mask": fixed_nonlinear_mask.copy(),
         "nnls_residual_norm": nnls_residual_norm,
         "fit_method": "LifeFit-style NNLS reconvolution",
         "use_poisson_weights": use_poisson_weights,
@@ -719,6 +1014,9 @@ def ask_initial_parameter_estimates(parent, n_exponentials, default_params):
     Parameter order:
         A1, tau1, A2, tau2, ..., An, taun,
         shift_irf_ns, background_decay, background_irf
+
+    Each row has a Fix checkbox. If checked, that parameter stays at the entered
+    value and the fit is done on the remaining variables.
     """
     dialog = tk.Toplevel(parent)
     dialog.title("Initial Fit Parameter Estimates")
@@ -726,15 +1024,15 @@ def ask_initial_parameter_estimates(parent, n_exponentials, default_params):
     dialog.grab_set()
 
     default_params = np.asarray(default_params, dtype=float)
-    result = {"ok": False, "initial_params": None}
+    result = {"ok": False, "initial_params": None, "fixed_params": None}
     entries = []
 
     intro = (
-        "Enter initial guesses for the fit. These are starting values only; "
-        "the optimizer will adjust them."
+        "Enter initial guesses for the fit. Check Fix to keep a value constant; "
+        "unchecked parameters are fitted or NNLS-solved."
     )
-    tk.Label(dialog, text=intro, wraplength=420, justify="left").grid(
-        row=0, column=0, columnspan=3, padx=12, pady=(12, 8), sticky="w"
+    tk.Label(dialog, text=intro, wraplength=520, justify="left").grid(
+        row=0, column=0, columnspan=4, padx=12, pady=(12, 8), sticky="w"
     )
 
     row = 1
@@ -744,8 +1042,11 @@ def ask_initial_parameter_estimates(parent, n_exponentials, default_params):
     tk.Label(dialog, text="Initial estimate", font=("TkDefaultFont", 9, "bold")).grid(
         row=row, column=1, padx=12, pady=(0, 4), sticky="w"
     )
-    tk.Label(dialog, text="Allowed range", font=("TkDefaultFont", 9, "bold")).grid(
+    tk.Label(dialog, text="Fix", font=("TkDefaultFont", 9, "bold")).grid(
         row=row, column=2, padx=12, pady=(0, 4), sticky="w"
+    )
+    tk.Label(dialog, text="Allowed range", font=("TkDefaultFont", 9, "bold")).grid(
+        row=row, column=3, padx=12, pady=(0, 4), sticky="w"
     )
 
     labels = []
@@ -759,26 +1060,38 @@ def ask_initial_parameter_estimates(parent, n_exponentials, default_params):
     for label, value, allowed in zip(labels, default_params, allowed_ranges):
         row += 1
         tk.Label(dialog, text=label).grid(row=row, column=0, padx=12, pady=3, sticky="w")
-        var = tk.StringVar(value=f"{value:.6g}")
-        entry = tk.Entry(dialog, textvariable=var, width=16)
+        value_var = tk.StringVar(value=f"{value:.6g}")
+        entry = tk.Entry(dialog, textvariable=value_var, width=16)
         entry.grid(row=row, column=1, padx=12, pady=3, sticky="w")
-        tk.Label(dialog, text=allowed).grid(row=row, column=2, padx=12, pady=3, sticky="w")
-        entries.append((label, var))
+        fixed_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(dialog, variable=fixed_var).grid(row=row, column=2, padx=12, pady=3, sticky="w")
+        tk.Label(dialog, text=allowed).grid(row=row, column=3, padx=12, pady=3, sticky="w")
+        entries.append((label, value_var, fixed_var))
+
+    note = (
+        "Note: A and background decay are linear NNLS variables unless fixed. "
+        "Background IRF is only applied when fixed; otherwise it remains 0 as in the original script."
+    )
+    tk.Label(dialog, text=note, wraplength=520, justify="left", fg="gray35").grid(
+        row=row + 1, column=0, columnspan=4, padx=12, pady=(8, 0), sticky="w"
+    )
 
     button_frame = tk.Frame(dialog)
-    button_frame.grid(row=row + 1, column=0, columnspan=3, padx=12, pady=(10, 12), sticky="e")
+    button_frame.grid(row=row + 2, column=0, columnspan=4, padx=12, pady=(10, 12), sticky="e")
 
     def submit():
         values = []
+        fixed_flags = []
         try:
-            for label, var in entries:
-                text = var.get().strip()
+            for label, value_var, fixed_var in entries:
+                text = value_var.get().strip()
                 if not text:
                     raise ValueError(f"{label} is blank.")
                 value = float(text)
                 if not np.isfinite(value):
                     raise ValueError(f"{label} must be a finite number.")
                 values.append(value)
+                fixed_flags.append(bool(fixed_var.get()))
 
             lower_bounds, upper_bounds = make_bounds(n_exponentials)
             values_arr = np.asarray(values, dtype=float)
@@ -793,6 +1106,7 @@ def ask_initial_parameter_estimates(parent, n_exponentials, default_params):
 
         result["ok"] = True
         result["initial_params"] = np.asarray(values, dtype=float)
+        result["fixed_params"] = np.asarray(fixed_flags, dtype=bool)
         dialog.destroy()
 
     def cancel():
@@ -801,8 +1115,6 @@ def ask_initial_parameter_estimates(parent, n_exponentials, default_params):
     tk.Button(button_frame, text="Cancel", command=cancel).pack(side="right", padx=(6, 0))
     tk.Button(button_frame, text="Run fit", command=submit).pack(side="right")
 
-    if entries:
-        dialog.children[next(iter(dialog.children))] if False else None
     dialog.bind("<Return>", lambda event: submit())
     dialog.bind("<Escape>", lambda event: cancel())
 
@@ -947,6 +1259,7 @@ def run_gui_workflow():
             fit_start_ns=None,
             fit_end_ns=None,
             initial_params=initial_options["initial_params"],
+            fixed_params=initial_options["fixed_params"],
         )
         plot_fit_and_residuals(fit_result)
 
@@ -974,14 +1287,17 @@ def run_gui_workflow():
         initial_amplitudes, initial_taus, initial_shift, initial_bg_decay, initial_bg_irf = unpack_multi_exp_params(
             fit_result["initial_params"], fit_result["n_exponentials"]
         )
-        for idx, (initial_amplitude, initial_tau) in enumerate(
-            zip(initial_amplitudes, initial_taus), start=1
+        fixed_params = np.asarray(fit_result["fixed_params"], dtype=bool)
+        fixed_amplitudes = fixed_params[0 : 2 * fit_result["n_exponentials"] : 2]
+        fixed_taus = fixed_params[1 : 2 * fit_result["n_exponentials"] : 2]
+        for idx, (initial_amplitude, initial_tau, fixed_a, fixed_tau) in enumerate(
+            zip(initial_amplitudes, initial_taus, fixed_amplitudes, fixed_taus), start=1
         ):
-            msg_lines.append(f"Initial A{idx} [Cnts]: {initial_amplitude:.5f}")
-            msg_lines.append(f"Initial tau{idx} [ns]: {initial_tau:.5f}")
-        msg_lines.append(f"Initial Shift IRF [ns]: {initial_shift:.5f}")
-        msg_lines.append(f"Initial background decay [Cnts]: {initial_bg_decay:.5f}")
-        msg_lines.append(f"Initial background IRF [Cnts]: {initial_bg_irf:.5f}")
+            msg_lines.append(f"Initial A{idx} [Cnts]: {initial_amplitude:.5f}" + (" (fixed)" if fixed_a else ""))
+            msg_lines.append(f"Initial tau{idx} [ns]: {initial_tau:.5f}" + (" (fixed)" if fixed_tau else ""))
+        msg_lines.append(f"Initial Shift IRF [ns]: {initial_shift:.5f}" + (" (fixed)" if fixed_params[2 * fit_result["n_exponentials"]] else ""))
+        msg_lines.append(f"Initial background decay [Cnts]: {initial_bg_decay:.5f}" + (" (fixed)" if fixed_params[2 * fit_result["n_exponentials"] + 1] else ""))
+        msg_lines.append(f"Initial background IRF [Cnts]: {initial_bg_irf:.5f}" + (" (fixed)" if fixed_params[2 * fit_result["n_exponentials"] + 2] else ""))
 
         msg_lines.append("")
         msg_lines.append("Fitted parameters (LifeFit-style NNLS amplitudes/background):")
@@ -1006,6 +1322,7 @@ def run_gui_workflow():
                 #f"IRF offset subtracted: {fit_result['irf_offset_subtracted']:.5f}",
                 f"Reduced chi-square: {fit_result['reduced_chi2']:.5f}",
                 f"Fitted points: {fit_result['fitted_points']}",
+                f"Decay regularization: {fit_result['decay_regularization_info']}",
             ]
         )
 
