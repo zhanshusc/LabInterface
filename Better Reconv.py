@@ -16,7 +16,9 @@ from tkinter import filedialog, messagebox
 # Background: ignore the baselines 
 # Shows the life time and amplitude ratios in the plot, and chi squared as a part of the plot 
 # fancy error functions, A1 A2, amplitutde and life time errors 
-# Amplitude ratios, what is the intensity ratio between A1, A2, and A3 
+# Amplitude ratios, what is the intensity ratio between A1, A2, and A3 \
+
+# I genuinely don't know what happened with the chi-squared that it's 0.8, Same function = different chi-squared
 
 # https://github.com/PicoQuant/snAPI
 # https://rna-fretools.github.io/Lifefit/
@@ -217,6 +219,23 @@ def make_bounds(n_exponentials):
     return lower_bounds, upper_bounds
 
 
+def divide_nonzero_by_first_nonzero(values, data_name="data"):
+    """
+    Divide every non-zero value by the array's first non-zero value.
+
+    Zero values remain zero. The divisor is returned for reporting/debugging.
+    """
+    values = np.asarray(values, dtype=float)
+    nonzero_indices = np.flatnonzero(values != 0)
+
+    if nonzero_indices.size == 0:
+        raise ValueError(f"{data_name} contains no non-zero values.")
+
+    first_nonzero = float(values[nonzero_indices[0]])
+    normalized_values = np.where(values != 0, values / first_nonzero, values)
+    return normalized_values, first_nonzero
+
+
 def normalize_irf_max_to_decay_by_offset(irf, decay):
     """
     Offset-normalize the IRF so its maximum equals the decay maximum.
@@ -240,7 +259,7 @@ def fit_multi_exp_reconv(
     n_exponentials=1,
     decay_block=0,
     irf_block=0,
-    fit_start_ns=5,
+    fit_start_ns=None,
     fit_end_ns=48,
     initial_params=None,
     fixed_params=None,
@@ -251,6 +270,12 @@ def fit_multi_exp_reconv(
 
     time_ns, decay = load_sdt_decay(decay_sdt_path, decay_block)
     irf_time_ns, irf = load_sdt_decay(irf_sdt_path, irf_block)
+
+    # Divide non-zero decay and IRF values by each array's first non-zero value.
+    decay, decay_divisor = divide_nonzero_by_first_nonzero(decay, "Decay")
+    irf, irf_divisor = divide_nonzero_by_first_nonzero(irf, "IRF")
+    print("Decay first non-zero divisor:", decay_divisor)
+    print("IRF first non-zero divisor:", irf_divisor)
     print("Decay time first 10:", time_ns[:10])
     print("Decay time last:", time_ns[-1])
     print("Decay dt:", np.median(np.diff(time_ns)))
@@ -273,18 +298,25 @@ def fit_multi_exp_reconv(
 
     dt = float(np.median(np.diff(time_ns)))
 
+    # Find the first non-zero decay value once so both the fit and
+    # chi-square calculation use the same starting point
+    nonzero_decay_indices = np.flatnonzero(decay != 0)
+    if nonzero_decay_indices.size == 0:
+        raise ValueError("Decay contains no non-zero values, so a fit start cannot be determined.")
+    first_nonzero_idx = int(nonzero_decay_indices[0])
+    first_nonzero_ns = float(time_ns[first_nonzero_idx])
+
     if fit_start_ns is None:
-        # Better dynamic masking
-        peak_idx = np.argmax(decay)
-        # Find the index where the rising edge crosses 5% of the peak
-        threshold = 0.05 * decay[peak_idx]
-        start_idx = np.where(decay[:peak_idx] > threshold)[0][0] 
-        fit_start_ns = float(time_ns[start_idx])
-        #fit_start_ns = float(time_ns[np.argmax(decay)])
+        fit_start_ns = first_nonzero_ns
+        print("Fit starts at first non-zero decay value:", fit_start_ns, "ns")
     if fit_end_ns is None:
         fit_end_ns = float(time_ns[-1])
 
     fit_mask = (time_ns >= fit_start_ns) & (time_ns <= fit_end_ns)
+
+    # Calculate chi-square only from the first non-zero decay value onward.
+    # This remains true even if a caller supplies an earlier fit_start_ns.
+    chi_square_mask = fit_mask & (time_ns >= first_nonzero_ns)
 
     if initial_params is None:
         p0 = make_initial_params(decay, n_exponentials)
@@ -369,13 +401,15 @@ def fit_multi_exp_reconv(
         params, time_ns, decay, irf, dt, full_mask, n_exponentials
     )
 
-    fit_residuals = poisson_residuals(
-        params, time_ns, decay, irf, dt, fit_mask, n_exponentials
+    chi_square_residuals = poisson_residuals(
+        params, time_ns, decay, irf, dt, chi_square_mask, n_exponentials
     )
-    n_fit_points = int(fit_mask.sum())
+    n_fit_points = int(chi_square_mask.sum())
     n_params = int(np.sum(~fixed_params))
 
-    reduced_chi2 = np.sum(fit_residuals ** 2) / max(n_fit_points - n_params, 1)
+    reduced_chi2 = np.sum(chi_square_residuals ** 2) / max(
+        n_fit_points - n_params, 1
+    )
 
     amplitude_sum = float(np.sum(amplitudes))
     amplitude_fractions = (
@@ -849,6 +883,8 @@ def run_gui_workflow():
 
     try:
         preview_time_ns, preview_decay = load_sdt_decay(decay_sdt_path, block=0)
+        preview_decay, _ = divide_nonzero_by_first_nonzero(preview_decay, "Decay preview")
+
         default_initial_params = make_initial_params(preview_decay, options["n_exponentials"])
     except Exception as e:
         messagebox.showerror("Error", f"Could not load decay data for initial estimates:\n{e}")
