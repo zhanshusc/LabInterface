@@ -262,12 +262,13 @@ classdef SolitonTAExperimentSelfContained < handle
             obj.backgroundSubtractionUpperBoundInxed=UBT_idx;
 
         end
-        function chirpCorrectionSoliton_SC(obj,CCcoeffs)
+        function chirpCorrectionSoliton_SC(obj,CCcoeffs,options)
             % chirpCorrectionSoliton_SC Corrects for dispersion in probe by
             % 
             arguments
                 obj SolitonTAExperimentSelfContained
                 CCcoeffs (1,5) {mustBeNumeric}; %= [0,0,0,0,0];
+                options.showFigure (1,1) logical = false;
             end
              
             timeAx=obj.timesSorted;
@@ -308,13 +309,16 @@ classdef SolitonTAExperimentSelfContained < handle
             end
             
             chirpcorrdat = newmat;
-            figure;[h]=surf(energyAx,newTimeAx,chirpcorrdat,EdgeColor="none");set(h,'Linestyle','none');ylabel('t / ps');xlabel('Probe Energy /eV');title('Chirp Corrected');ylim([-1 1]);colormap(obj.divergingBlueWhiteRed_SC(200));
-            clim([-0.005,0.005]);colorbar();view(2);%xlim([1,6]);
+            if options.showFigure
+                figure;[h]=surf(energyAx,newTimeAx,chirpcorrdat,EdgeColor="none");set(h,'Linestyle','none');ylabel('t / ps');xlabel('Probe Energy /eV');title('Chirp Corrected');ylim([-1 1]);colormap(obj.divergingBlueWhiteRed_SC(200));
+                clim([-0.005,0.005]);colorbar();view(2);%xlim([1,6]);
+            end
             % TAdat_cc = chirpcorrdat;
             % t = newTimeAx;
             obj.TAMeanSortedBackgroundSub_CC=chirpcorrdat;
             obj.timesSorted_CC=newTimeAx;
-            obj.energyAxis_CC=CCenergyAx;
+            obj.energyAxis_CC=energyAx(:);
+            obj.chirpCorrectionCoefficients=CCcoeffs(:);
         end
         
 
