@@ -525,7 +525,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.spectral_scale_var.trace_add("write", self._on_graph_axis_controls_changed)
         self.time_scale_var.trace_add("write", self._on_graph_axis_controls_changed)
 
-        # Populate Tab 4: Residuals / Cleaned Comparison
+        # Populate the Fitting tab with independent TA and TCSPC result charts.
         # This tab will have two plots, so we use a main frame
         tab3_main_frame = ttk.Frame(tab3)
         tab3_main_frame.pack(fill=tk.BOTH, expand=True)
@@ -534,27 +534,27 @@ class PsTAAnalysisApp(tk.Tk):
         tab3_main_frame.grid_columnconfigure(0, weight=1)
         
         # Top Plot: TA data
-        before_fig = Figure(dpi=100)
-        before_ax = before_fig.add_subplot(111)
-        before_ax.set_title("psTA")
-        before_ax.set_ylabel("ΔA")
-        before_ax.grid(True)
-        before_ax.text(0.5, 0.5, "psTA", horizontalalignment='center', verticalalignment='center', transform=before_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
+        self.fitting_ta_fig = Figure(dpi=100)
+        self.fitting_ta_ax = self.fitting_ta_fig.add_subplot(111)
+        self.fitting_ta_ax.set_title("Latest TA graph")
+        self.fitting_ta_ax.set_ylabel("ΔA")
+        self.fitting_ta_ax.grid(True)
+        self.fitting_ta_ax.text(0.5, 0.5, "Graph TA data to populate this chart", horizontalalignment='center', verticalalignment='center', transform=self.fitting_ta_ax.transAxes, fontsize=12, color='gray', alpha=0.5)
         
-        self.canvas_tab3_top = FigureCanvasTkAgg(before_fig, master=tab3_main_frame)
+        self.canvas_tab3_top = FigureCanvasTkAgg(self.fitting_ta_fig, master=tab3_main_frame)
         self.canvas_tab3_top.draw()
         self.canvas_tab3_top.get_tk_widget().grid(row=0, column=0, sticky="nsew", pady=2)
 
         # Bottom Plot: TCSPC
-        after_fig = Figure(dpi=100)
-        after_ax = after_fig.add_subplot(111)
-        after_ax.set_title("TCSPC")
-        after_ax.set_xlabel("Time (ps/ns)")
-        after_ax.set_ylabel("Emission Intensity")
-        after_ax.grid(True)
-        after_ax.text(0.5, 0.5, "TCSPC", horizontalalignment='center', verticalalignment='center', transform=after_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
+        self.fitting_tcspc_fig = Figure(dpi=100)
+        self.fitting_tcspc_ax = self.fitting_tcspc_fig.add_subplot(111)
+        self.fitting_tcspc_ax.set_title("Latest TCSPC graph")
+        self.fitting_tcspc_ax.set_xlabel("Time (ns)")
+        self.fitting_tcspc_ax.set_ylabel("Emission Intensity")
+        self.fitting_tcspc_ax.grid(True)
+        self.fitting_tcspc_ax.text(0.5, 0.5, "Graph TCSPC data to populate this chart", horizontalalignment='center', verticalalignment='center', transform=self.fitting_tcspc_ax.transAxes, fontsize=12, color='gray', alpha=0.5)
         
-        self.canvas_tab3_bot = FigureCanvasTkAgg(after_fig, master=tab3_main_frame)
+        self.canvas_tab3_bot = FigureCanvasTkAgg(self.fitting_tcspc_fig, master=tab3_main_frame)
         self.canvas_tab3_bot.draw()
         self.canvas_tab3_bot.get_tk_widget().grid(row=1, column=0, sticky="nsew", pady=2)
 
@@ -856,6 +856,85 @@ class PsTAAnalysisApp(tk.Tk):
             self._create_fitting_right_controls(self.right_dynamic_frame)
         else:
             self._create_range_adjuster_right_controls(self.right_dynamic_frame, active_tab)
+
+    def _populate_fitting_chart(
+        self,
+        source_ax,
+        target_ax,
+        target_figure,
+        target_canvas,
+        fallback_xlabel="",
+    ):
+        """Copy the visible line results from a graph into a Fitting-tab chart."""
+        target_ax.cla()
+
+        for source_line in source_ax.get_lines():
+            if not source_line.get_visible():
+                continue
+
+            target_ax.plot(
+                np.asarray(source_line.get_xdata()),
+                np.asarray(source_line.get_ydata()),
+                color=source_line.get_color(),
+                linestyle=source_line.get_linestyle(),
+                linewidth=source_line.get_linewidth(),
+                marker=source_line.get_marker(),
+                markersize=source_line.get_markersize(),
+                alpha=source_line.get_alpha(),
+                label=source_line.get_label(),
+            )
+
+        target_ax.set_title(source_ax.get_title())
+        target_ax.set_xlabel(source_ax.get_xlabel() or fallback_xlabel)
+        target_ax.set_ylabel(source_ax.get_ylabel())
+        for axis_name in ("x", "y"):
+            source_axis = getattr(source_ax, f"{axis_name}axis")
+            target_set_scale = getattr(target_ax, f"set_{axis_name}scale")
+            scale_name = getattr(source_ax, f"get_{axis_name}scale")()
+            scale_options = {}
+            transform = source_axis.get_transform()
+            if scale_name == "symlog":
+                scale_options = {
+                    name: getattr(transform, name)
+                    for name in ("base", "linthresh", "linscale")
+                    if hasattr(transform, name)
+                }
+            elif scale_name == "log" and hasattr(transform, "base"):
+                scale_options["base"] = transform.base
+            target_set_scale(scale_name, **scale_options)
+        target_ax.set_xlim(source_ax.get_xlim())
+        target_ax.set_ylim(source_ax.get_ylim())
+        target_ax.grid(True)
+
+        handles, labels = target_ax.get_legend_handles_labels()
+        visible_legend = [
+            (handle, label)
+            for handle, label in zip(handles, labels)
+            if label and not label.startswith("_")
+        ]
+        if visible_legend:
+            legend_handles, legend_labels = zip(*visible_legend)
+            target_ax.legend(legend_handles, legend_labels, fontsize=8, framealpha=0.7)
+
+        target_figure.tight_layout()
+        target_canvas.draw_idle()
+
+    def _update_fitting_ta_chart(self, source_ax):
+        self._populate_fitting_chart(
+            source_ax,
+            self.fitting_ta_ax,
+            self.fitting_ta_fig,
+            self.canvas_tab3_top,
+        )
+
+    def _update_fitting_tcspc_chart(self):
+        self._populate_fitting_chart(
+            self.tcspc_ax,
+            self.fitting_tcspc_ax,
+            self.fitting_tcspc_fig,
+            self.canvas_tab3_bot,
+            fallback_xlabel="Time [ns]",
+        )
 
     def _create_fitting_right_controls(self, parent):
         """Original Kinetic Fitting layout, preserved for the Fitting tab."""
@@ -1192,6 +1271,7 @@ class PsTAAnalysisApp(tk.Tk):
             )
         self.tcspc_fig.tight_layout()
         self.tcspc_canvas.draw()
+        self._update_fitting_tcspc_chart()
 
     def _plot_tcspc_fit_and_residuals(self, fit_result):
         """Add the fitted curve/chi-square and a residual plot below the main graph."""
@@ -1247,6 +1327,7 @@ class PsTAAnalysisApp(tk.Tk):
 
         self.tcspc_fig.tight_layout()
         self.tcspc_canvas.draw()
+        self._update_fitting_tcspc_chart()
 
     def perform_tcspc_fit(self):
         """Validate right-panel settings, perform the reconvolution fit, and update plots."""
@@ -2931,6 +3012,7 @@ class PsTAAnalysisApp(tk.Tk):
         self._refresh_time_trace_legend()
         self.fig_time.tight_layout()
         self.canvas_time.draw()
+        self._update_fitting_ta_chart(self.ax_time)
         self.status_label.config(text="Status: Time-domain traces plotted.")
 
     def plot_wavelength_slices(self):
@@ -3021,6 +3103,7 @@ class PsTAAnalysisApp(tk.Tk):
         self.ax_wl.legend(fontsize=8, framealpha=0.7)
         self.fig_wl.tight_layout()
         self.canvas_wl.draw()
+        self._update_fitting_ta_chart(self.ax_wl)
 
         if avg_range == 0:
             self.status_label.config(text="Status: Wavelength-domain traces plotted.")
