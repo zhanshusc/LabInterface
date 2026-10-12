@@ -6,14 +6,16 @@ from tkinter import simpledialog
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import numpy as np
 import pandas as pd
-import matlab.engine
 import threading
 from pathlib import Path
 import os
 from datetime import datetime
+
+from imports.TAExperiment import TAExperiment
+from imports.SolitonTAExperimentSelfContained import SolitonTAExperimentSelfContained
 
 try:
     from scipy.optimize import least_squares
@@ -29,7 +31,7 @@ except ImportError:
 # implement min and max fitting for the heatmap where any value above the maximum or below the minimum becomes it.
 # Ideally use the bar on the heatmap  
 
-# 03/26 1. Call functions from new matlab class
+# 03/26 1. Call functions from new Python experiment classes
 # 2. Wavelength to energy space - Note: When you go from energy to wavelength for absorption it does not matter, but for counts you need apply a jacobian. 
 ##Low prio Getting the basics right -> Anyything that can be seen as a historgam florescence and phosphoflorescence needs adjustments 
 # 1 - 10% excitation fraction 
@@ -78,14 +80,13 @@ except ImportError:
 # 1. Cut pubchem search out
 # 2. Implement new interface features
 # 3. TCSPC functionality reconstruction via python
-# 4. Later Matlab translated into python 
+# 4. MATLAB processing translated into Python
 
 # Use RdBu as color map for matplotlib 
 # Plotly 
 class PsTAAnalysisApp(tk.Tk):
     """
-    A Python tkinter application replicating the psTA Analysis Suite layout
-    described for MATLAB App Designer.
+    A Python tkinter application replicating the psTA Analysis Suite
     """ 
     def __init__(self):
         super().__init__()
@@ -99,32 +100,32 @@ class PsTAAnalysisApp(tk.Tk):
         self.minsize(1280, 720)
         self._maximize_main_window()
         
-        # Main Grid Layout (3 Columns)
-        # Column 0: analysis/data controls
-        self.grid_columnconfigure(0, weight=2, minsize=280)
-        # Column 1: plots/visualization; this remains the largest area.
-        self.grid_columnconfigure(1, weight=5, minsize=680)
-        # Column 2: fitting/range controls.  TCSPC parameter entry needs room
-        # for parameter names, editable estimates, fixed flags, and bounds.
-        self.grid_columnconfigure(2, weight=3, minsize=440)
+        # Draggable dividers let users allocate space to controls and plots.
+        self.grid_columnconfigure(0, weight=1)
         # Row 0: Main content
         self.grid_rowconfigure(0, weight=1)
         # Row 1: Status Bar
         self.grid_rowconfigure(1, weight=0)
 
+        self.main_panes = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL, sashwidth=8, sashrelief=tk.RAISED,
+            showhandle=True, opaqueresize=True, borderwidth=0,
+        )
+        self.main_panes.grid(row=0, column=0, sticky="nsew")
+
         # Create the Three Major Panels
-        self.left_panel = ttk.Frame(self, padding="10")
-        self.middle_panel = ttk.Frame(self, padding="10")
-        self.right_panel = ttk.Frame(self, padding="10")
+        self.left_panel = ttk.Frame(self.main_panes, padding="10")
+        self.middle_panel = ttk.Frame(self.main_panes, padding="10")
+        self.right_panel = ttk.Frame(self.main_panes, padding="10")
 
         self.left_panel.pack_propagate(False)
         self.middle_panel.pack_propagate(False)
         self.right_panel.pack_propagate(False)
 
-        # Place panels on the grid
-        self.left_panel.grid(row=0, column=0, sticky="nsew")
-        self.middle_panel.grid(row=0, column=1, sticky="nsew")
-        self.right_panel.grid(row=0, column=2, sticky="nsew")
+        # Keep each pane accessible, while allowing more space for any panel.
+        self.main_panes.add(self.left_panel, width=280, minsize=180, stretch="always")
+        self.main_panes.add(self.middle_panel, width=680, minsize=320, stretch="always")
+        self.main_panes.add(self.right_panel, width=440, minsize=240, stretch="always")
 
         # Populate Each Panel 
         self._create_left_panel()
@@ -158,11 +159,6 @@ class PsTAAnalysisApp(tk.Tk):
             "fluorescence": {"label": "Fluorescence", "line": None, "data": None, "scale": None},
         }
 
-        # Matlab Environment Start
-        self.eng = matlab.engine.start_matlab()
-        # Add path to MATLAB script
-        self.eng.addpath(r"MatlabItems", nargout=0)
-        self.eng.addpath(r"MatlabItems", nargout=0)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.map_colorbar = None
 
@@ -268,6 +264,13 @@ class PsTAAnalysisApp(tk.Tk):
     def _create_middle_panel(self):
         """Populates the Middle Panel (Visualization & Diagnostics)"""
         frame = self.middle_panel
+
+        # Shared graph controls.  Every spectral plot follows the same display
+        # units and scale so changing one tab keeps the other tabs consistent.
+        self.spectral_axis_mode_var = tk.StringVar(value="Wavelength (nm)")
+        self.spectral_scale_var = tk.StringVar(value="Linear")
+        self.time_scale_var = tk.StringVar(value="Linear")
+        scale_choices = ["Linear", "Log", "Lin-log"]
         
         # Create the Tab Group (Notebook)
         self.tab_control = ttk.Notebook(frame)
@@ -309,7 +312,8 @@ class PsTAAnalysisApp(tk.Tk):
         ).grid(row=0, column=3, padx=2, pady=2)
 
         # New wavelength range controls for the time-domain traces plot only
-        ttk.Label(tab1_controls, text="Visible wavelength range (nm):").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        self.time_trace_range_label = ttk.Label(tab1_controls, text="Visible wavelength range (nm):")
+        self.time_trace_range_label.grid(row=1, column=0, sticky='w', padx=5, pady=2)
         self.time_trace_wl_range_var = tk.StringVar(value="")
         ttk.Entry(tab1_controls, textvariable=self.time_trace_wl_range_var, width=35).grid(row=1, column=1, sticky='w', padx=5, pady=2)
         ttk.Button(tab1_controls, text="Apply Range", command=self.apply_time_trace_wavelength_range).grid(row=1, column=2, padx=2, pady=2)
@@ -343,6 +347,23 @@ class PsTAAnalysisApp(tk.Tk):
         )
         self.fluorescence_toggle.grid(row=3, column=1, padx=5, pady=2, sticky='w')
 
+        ttk.Label(tab1_controls, text="Spectral axis:").grid(row=4, column=0, sticky="w", padx=5, pady=2)
+        ttk.Combobox(
+            tab1_controls,
+            textvariable=self.spectral_axis_mode_var,
+            values=["Energy (eV)", "Wavelength (nm)", "Pixel"],
+            state="readonly",
+            width=18,
+        ).grid(row=4, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(tab1_controls, text="Spectral scale:").grid(row=4, column=2, sticky="e", padx=5)
+        ttk.Combobox(
+            tab1_controls,
+            textvariable=self.spectral_scale_var,
+            values=scale_choices,
+            state="readonly",
+            width=10,
+        ).grid(row=4, column=3, sticky="w", padx=2)
+
         tab1_controls.grid_columnconfigure(1, weight=1)
 
         self.fig_time = Figure(figsize=(5, 4), dpi=100)
@@ -370,7 +391,8 @@ class PsTAAnalysisApp(tk.Tk):
         row1 = ttk.Frame(tab4_controls)
         row1.pack(side='top', fill='x', pady=2)
 
-        ttk.Label(row1, text="Wavelengths (nm), comma-separated:").pack(side='left', padx=5)
+        self.wavelength_input_label = ttk.Label(row1, text="Wavelengths (nm), comma-separated:")
+        self.wavelength_input_label.pack(side='left', padx=5)
         self.wl_slice_var = tk.StringVar(value="500, 550, 600, 650")
         ttk.Entry(row1, textvariable=self.wl_slice_var, width=35).pack(side='left', padx=5)
 
@@ -378,7 +400,8 @@ class PsTAAnalysisApp(tk.Tk):
         row2 = ttk.Frame(tab4_controls)
         row2.pack(side='top', fill='x', pady=2)
 
-        ttk.Label(row2, text="Average range (+/- nm):").pack(side='left', padx=5)
+        self.wl_avg_label = ttk.Label(row2, text="Average range (+/- nm):")
+        self.wl_avg_label.pack(side='left', padx=5)
         self.wl_avg_range_var = tk.StringVar(value="0")
         ttk.Entry(row2, textvariable=self.wl_avg_range_var, width=8).pack(side='left', padx=5)
         
@@ -393,6 +416,25 @@ class PsTAAnalysisApp(tk.Tk):
                 "Time (ps)", "ΔA", "Wavelength-Domain Traces"
             )
         ).pack(side='left', padx=2)
+
+        row3 = ttk.Frame(tab4_controls)
+        row3.pack(side="top", fill="x", pady=2)
+        ttk.Label(row3, text="Spectral axis:").pack(side="left", padx=5)
+        ttk.Combobox(
+            row3,
+            textvariable=self.spectral_axis_mode_var,
+            values=["Energy (eV)", "Wavelength (nm)", "Pixel"],
+            state="readonly",
+            width=18,
+        ).pack(side="left", padx=5)
+        ttk.Label(row3, text="Time scale:").pack(side="left", padx=(15, 5))
+        ttk.Combobox(
+            row3,
+            textvariable=self.time_scale_var,
+            values=scale_choices,
+            state="readonly",
+            width=10,
+        ).pack(side="left", padx=5)
 
         self.fig_wl = Figure(figsize=(5, 4), dpi=100)
         self.ax_wl = self.fig_wl.add_subplot(111)
@@ -439,6 +481,33 @@ class PsTAAnalysisApp(tk.Tk):
             tab2_controls, text="Show Colorbar", variable=self.colorbar_toggle_var
         ).pack(side='left', padx=5)
 
+        map_axis_controls = ttk.Frame(tab2)
+        map_axis_controls.pack(fill="x", pady=(0, 4))
+        ttk.Label(map_axis_controls, text="Spectral axis:").pack(side="left", padx=5)
+        ttk.Combobox(
+            map_axis_controls,
+            textvariable=self.spectral_axis_mode_var,
+            values=["Energy (eV)", "Wavelength (nm)", "Pixel"],
+            state="readonly",
+            width=18,
+        ).pack(side="left", padx=5)
+        ttk.Label(map_axis_controls, text="Spectral scale:").pack(side="left", padx=(15, 5))
+        ttk.Combobox(
+            map_axis_controls,
+            textvariable=self.spectral_scale_var,
+            values=scale_choices,
+            state="readonly",
+            width=10,
+        ).pack(side="left", padx=5)
+        ttk.Label(map_axis_controls, text="Time scale:").pack(side="left", padx=(15, 5))
+        ttk.Combobox(
+            map_axis_controls,
+            textvariable=self.time_scale_var,
+            values=scale_choices,
+            state="readonly",
+            width=10,
+        ).pack(side="left", padx=5)
+
 
         # Add Matplotlib Plot Canvas (UIAxes_Map)
         self.map_fig = Figure(figsize=(5, 4), dpi=100)
@@ -452,38 +521,46 @@ class PsTAAnalysisApp(tk.Tk):
         self.canvas_tab2.draw()
         self.canvas_tab2.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Populate Tab 4: Residuals / Cleaned Comparison
-        # This tab will have two plots, so we use a main frame
-        tab3_main_frame = ttk.Frame(tab3)
+        self.spectral_axis_mode_var.trace_add("write", self._on_graph_axis_controls_changed)
+        self.spectral_scale_var.trace_add("write", self._on_graph_axis_controls_changed)
+        self.time_scale_var.trace_add("write", self._on_graph_axis_controls_changed)
+
+        # Populate the Fitting tab with independent TA and TCSPC result charts.
+        # A horizontal divider also lets users resize the two result charts.
+        tab3_main_frame = tk.PanedWindow(
+            tab3, orient=tk.VERTICAL, sashwidth=8, sashrelief=tk.RAISED,
+            showhandle=True, opaqueresize=True, borderwidth=0,
+        )
         tab3_main_frame.pack(fill=tk.BOTH, expand=True)
-        tab3_main_frame.grid_rowconfigure(0, weight=1)
-        tab3_main_frame.grid_rowconfigure(1, weight=1)
-        tab3_main_frame.grid_columnconfigure(0, weight=1)
         
         # Top Plot: TA data
-        before_fig = Figure(dpi=100)
-        before_ax = before_fig.add_subplot(111)
-        before_ax.set_title("psTA")
-        before_ax.set_ylabel("ΔA")
-        before_ax.grid(True)
-        before_ax.text(0.5, 0.5, "psTA", horizontalalignment='center', verticalalignment='center', transform=before_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
+        self.fitting_ta_fig = Figure(dpi=100)
+        self.fitting_ta_ax = self.fitting_ta_fig.add_subplot(111)
+        self.fitting_ta_ax.set_title("Latest TA graph")
+        self.fitting_ta_ax.set_ylabel("ΔA")
+        self.fitting_ta_ax.grid(True)
+        self.fitting_ta_ax.text(0.5, 0.5, "Graph TA data to populate this chart", horizontalalignment='center', verticalalignment='center', transform=self.fitting_ta_ax.transAxes, fontsize=12, color='gray', alpha=0.5)
         
-        self.canvas_tab3_top = FigureCanvasTkAgg(before_fig, master=tab3_main_frame)
+        self.canvas_tab3_top = FigureCanvasTkAgg(self.fitting_ta_fig, master=tab3_main_frame)
         self.canvas_tab3_top.draw()
-        self.canvas_tab3_top.get_tk_widget().grid(row=0, column=0, sticky="nsew", pady=2)
+        tab3_main_frame.add(
+            self.canvas_tab3_top.get_tk_widget(), minsize=100, stretch="always",
+        )
 
         # Bottom Plot: TCSPC
-        after_fig = Figure(dpi=100)
-        after_ax = after_fig.add_subplot(111)
-        after_ax.set_title("TCSPC")
-        after_ax.set_xlabel("Time (ps/ns)")
-        after_ax.set_ylabel("Emission Intensity")
-        after_ax.grid(True)
-        after_ax.text(0.5, 0.5, "TCSPC", horizontalalignment='center', verticalalignment='center', transform=after_ax.transAxes, fontsize=14, color='gray', alpha=0.5)
+        self.fitting_tcspc_fig = Figure(dpi=100)
+        self.fitting_tcspc_ax = self.fitting_tcspc_fig.add_subplot(111)
+        self.fitting_tcspc_ax.set_title("Latest TCSPC graph")
+        self.fitting_tcspc_ax.set_xlabel("Time (ns)")
+        self.fitting_tcspc_ax.set_ylabel("Emission Intensity")
+        self.fitting_tcspc_ax.grid(True)
+        self.fitting_tcspc_ax.text(0.5, 0.5, "Graph TCSPC data to populate this chart", horizontalalignment='center', verticalalignment='center', transform=self.fitting_tcspc_ax.transAxes, fontsize=12, color='gray', alpha=0.5)
         
-        self.canvas_tab3_bot = FigureCanvasTkAgg(after_fig, master=tab3_main_frame)
+        self.canvas_tab3_bot = FigureCanvasTkAgg(self.fitting_tcspc_fig, master=tab3_main_frame)
         self.canvas_tab3_bot.draw()
-        self.canvas_tab3_bot.get_tk_widget().grid(row=1, column=0, sticky="nsew", pady=2)
+        tab3_main_frame.add(
+            self.canvas_tab3_bot.get_tk_widget(), minsize=100, stretch="always",
+        )
 
 
         # Populate Tab 5: TCSPC Exponential Fit
@@ -580,6 +657,165 @@ class PsTAAnalysisApp(tk.Tk):
 
         self.after_idle(self._normalize_active_tab_layout)
 
+    @staticmethod
+    def _ev_to_nm(energy_ev):
+        """Convert positive photon energies in eV to vacuum wavelength in nm."""
+        energy = np.asarray(energy_ev, dtype=float)
+        result = np.full(energy.shape, np.nan, dtype=float)
+        valid = np.isfinite(energy) & (energy > 0)
+        result[valid] = 1239.8419843320026 / energy[valid]
+        return result
+
+    @staticmethod
+    def _nm_to_ev(wavelength_nm):
+        """Convert positive vacuum wavelengths in nm to photon energy in eV."""
+        wavelength = np.asarray(wavelength_nm, dtype=float)
+        result = np.full(wavelength.shape, np.nan, dtype=float)
+        valid = np.isfinite(wavelength) & (wavelength > 0)
+        result[valid] = 1239.8419843320026 / wavelength[valid]
+        return result
+
+    def _wavelengths_to_current_spectral_axis(self, wavelengths_nm):
+        """Convert overlay wavelengths to the spectral units currently displayed."""
+        wavelengths = np.asarray(wavelengths_nm, dtype=float)
+        _, _, kind = self._spectral_axis_metadata()
+        if kind == "wavelength":
+            return wavelengths.copy()
+        if kind == "energy":
+            return self._nm_to_ev(wavelengths)
+
+        native = np.asarray(getattr(self, "native_spectral_axis", []), dtype=float)
+        pixels = np.asarray(getattr(self, "pixel_axis", []), dtype=float)
+        native_kind = getattr(self, "native_spectral_kind", None)
+        if native.size == 0 or native_kind == "pixel":
+            return np.full(wavelengths.shape, np.nan)
+        physical_values = wavelengths if native_kind == "wavelength" else self._nm_to_ev(wavelengths)
+        order = np.argsort(native)
+        return np.interp(
+            physical_values,
+            native[order],
+            pixels[order],
+            left=np.nan,
+            right=np.nan,
+        )
+
+    def _spectral_axis_metadata(self):
+        mode = getattr(self, "spectral_axis_mode_var", None)
+        mode = mode.get() if mode is not None else "Wavelength (nm)"
+        if mode == "Energy (eV)":
+            return "Energy", "eV", "energy"
+        if mode == "Pixel":
+            return "Pixel", "channel", "pixel"
+        return "Wavelength", "nm", "wavelength"
+
+    def _set_display_spectral_axis(self, requested_mode=None):
+        """Build the plotted spectral axis from the loaded experiment's native axis."""
+        if requested_mode is None:
+            requested_mode = self.spectral_axis_mode_var.get()
+        native_axis = np.asarray(getattr(self, "native_spectral_axis", []), dtype=float)
+        native_kind = getattr(self, "native_spectral_kind", None)
+        pixels = np.asarray(getattr(self, "pixel_axis", []), dtype=float)
+        if native_axis.size == 0:
+            return
+
+        if requested_mode == "Pixel":
+            display_axis = pixels
+        elif requested_mode == "Energy (eV)":
+            if native_kind == "energy":
+                display_axis = native_axis.copy()
+            elif native_kind == "wavelength":
+                display_axis = self._nm_to_ev(native_axis)
+            else:
+                raise ValueError(
+                    "This Soliton import has no energy calibration. Enter A, E, T0 during import to use eV."
+                )
+        elif requested_mode == "Wavelength (nm)":
+            if native_kind == "wavelength":
+                display_axis = native_axis.copy()
+            elif native_kind == "energy":
+                display_axis = self._ev_to_nm(native_axis)
+            else:
+                raise ValueError(
+                    "This Soliton import has no energy calibration, so its pixels cannot be converted to wavelength."
+                )
+        else:
+            raise ValueError(f"Unknown spectral-axis mode: {requested_mode}")
+
+        if display_axis.size != self.data.shape[1] or not np.any(np.isfinite(display_axis)):
+            raise ValueError("The converted spectral axis does not match the loaded TA matrix.")
+        self.wavelength = display_axis
+
+    def _update_spectral_control_labels(self):
+        quantity, units, _ = self._spectral_axis_metadata()
+        if hasattr(self, "time_trace_range_label"):
+            self.time_trace_range_label.config(text=f"Visible {quantity.lower()} range ({units}):")
+        if hasattr(self, "wavelength_input_label"):
+            self.wavelength_input_label.config(text=f"{quantity} values ({units}), comma-separated:")
+        if hasattr(self, "wl_avg_label"):
+            self.wl_avg_label.config(text=f"Average range (+/- {units}):")
+
+    def _set_default_spectral_inputs(self):
+        axis = np.asarray(getattr(self, "wavelength", []), dtype=float)
+        finite = np.sort(axis[np.isfinite(axis)])
+        if finite.size == 0:
+            return
+        quantiles = np.unique(np.quantile(finite, [0.2, 0.4, 0.6, 0.8]))
+        if hasattr(self, "wl_slice_var"):
+            self.wl_slice_var.set(", ".join(f"{value:.4g}" for value in quantiles))
+        if hasattr(self, "time_trace_wl_range_var"):
+            self.time_trace_wl_range_var.set("")
+        if hasattr(self, "wl_avg_range_var"):
+            self.wl_avg_range_var.set("0")
+
+    @staticmethod
+    def _matplotlib_scale(scale_name):
+        return {"Linear": "linear", "Log": "log", "Lin-log": "symlog"}.get(
+            scale_name, "linear"
+        )
+
+    def _apply_selected_scale(self, axes, axis_name, scale_name, values):
+        scale = self._matplotlib_scale(scale_name)
+        setter = axes.set_xscale if axis_name == "x" else axes.set_yscale
+        if scale == "symlog":
+            finite = np.abs(np.asarray(values, dtype=float))
+            finite = finite[np.isfinite(finite) & (finite > 0)]
+            span = float(np.nanmax(finite)) if finite.size else 1.0
+            linthresh = max(span * 1e-3, float(np.nanmin(finite)) if finite.size else 1e-3)
+            setter("symlog", linthresh=linthresh)
+        else:
+            setter(scale)
+
+    def _on_graph_axis_controls_changed(self, *unused):
+        if getattr(self, "_updating_graph_axis_controls", False):
+            return
+        if getattr(self, "data", None) is None:
+            self._update_spectral_control_labels()
+            return
+
+        previous_mode = getattr(self, "_last_spectral_axis_mode", None)
+        requested_mode = self.spectral_axis_mode_var.get()
+        try:
+            self._set_display_spectral_axis(requested_mode)
+        except ValueError as exc:
+            messagebox.showerror("Spectral Axis", str(exc))
+            if previous_mode:
+                self._updating_graph_axis_controls = True
+                self.spectral_axis_mode_var.set(previous_mode)
+                self._updating_graph_axis_controls = False
+            return
+
+        mode_changed = requested_mode != previous_mode
+        self._last_spectral_axis_mode = requested_mode
+        self._update_spectral_control_labels()
+        if mode_changed:
+            self._set_default_spectral_inputs()
+
+        self.update_2d_map()
+        self.plot_time_slices()
+        self.plot_wavelength_slices()
+        if hasattr(self, "right_dynamic_frame"):
+            self._update_right_panel_for_active_tab()
+
     def _normalize_active_tab_layout(self):
         self.update_idletasks()
 
@@ -624,6 +860,85 @@ class PsTAAnalysisApp(tk.Tk):
             self._create_fitting_right_controls(self.right_dynamic_frame)
         else:
             self._create_range_adjuster_right_controls(self.right_dynamic_frame, active_tab)
+
+    def _populate_fitting_chart(
+        self,
+        source_ax,
+        target_ax,
+        target_figure,
+        target_canvas,
+        fallback_xlabel="",
+    ):
+        """Copy the visible line results from a graph into a Fitting-tab chart."""
+        target_ax.cla()
+
+        for source_line in source_ax.get_lines():
+            if not source_line.get_visible():
+                continue
+
+            target_ax.plot(
+                np.asarray(source_line.get_xdata()),
+                np.asarray(source_line.get_ydata()),
+                color=source_line.get_color(),
+                linestyle=source_line.get_linestyle(),
+                linewidth=source_line.get_linewidth(),
+                marker=source_line.get_marker(),
+                markersize=source_line.get_markersize(),
+                alpha=source_line.get_alpha(),
+                label=source_line.get_label(),
+            )
+
+        target_ax.set_title(source_ax.get_title())
+        target_ax.set_xlabel(source_ax.get_xlabel() or fallback_xlabel)
+        target_ax.set_ylabel(source_ax.get_ylabel())
+        for axis_name in ("x", "y"):
+            source_axis = getattr(source_ax, f"{axis_name}axis")
+            target_set_scale = getattr(target_ax, f"set_{axis_name}scale")
+            scale_name = getattr(source_ax, f"get_{axis_name}scale")()
+            scale_options = {}
+            transform = source_axis.get_transform()
+            if scale_name == "symlog":
+                scale_options = {
+                    name: getattr(transform, name)
+                    for name in ("base", "linthresh", "linscale")
+                    if hasattr(transform, name)
+                }
+            elif scale_name == "log" and hasattr(transform, "base"):
+                scale_options["base"] = transform.base
+            target_set_scale(scale_name, **scale_options)
+        target_ax.set_xlim(source_ax.get_xlim())
+        target_ax.set_ylim(source_ax.get_ylim())
+        target_ax.grid(True)
+
+        handles, labels = target_ax.get_legend_handles_labels()
+        visible_legend = [
+            (handle, label)
+            for handle, label in zip(handles, labels)
+            if label and not label.startswith("_")
+        ]
+        if visible_legend:
+            legend_handles, legend_labels = zip(*visible_legend)
+            target_ax.legend(legend_handles, legend_labels, fontsize=8, framealpha=0.7)
+
+        target_figure.tight_layout()
+        target_canvas.draw_idle()
+
+    def _update_fitting_ta_chart(self, source_ax):
+        self._populate_fitting_chart(
+            source_ax,
+            self.fitting_ta_ax,
+            self.fitting_ta_fig,
+            self.canvas_tab3_top,
+        )
+
+    def _update_fitting_tcspc_chart(self):
+        self._populate_fitting_chart(
+            self.tcspc_ax,
+            self.fitting_tcspc_ax,
+            self.fitting_tcspc_fig,
+            self.canvas_tab3_bot,
+            fallback_xlabel="Time [ns]",
+        )
 
     def _create_fitting_right_controls(self, parent):
         """Original Kinetic Fitting layout, preserved for the Fitting tab."""
@@ -960,6 +1275,7 @@ class PsTAAnalysisApp(tk.Tk):
             )
         self.tcspc_fig.tight_layout()
         self.tcspc_canvas.draw()
+        self._update_fitting_tcspc_chart()
 
     def _plot_tcspc_fit_and_residuals(self, fit_result):
         """Add the fitted curve/chi-square and a residual plot below the main graph."""
@@ -1015,6 +1331,7 @@ class PsTAAnalysisApp(tk.Tk):
 
         self.tcspc_fig.tight_layout()
         self.tcspc_canvas.draw()
+        self._update_fitting_tcspc_chart()
 
     def perform_tcspc_fit(self):
         """Validate right-panel settings, perform the reconvolution fit, and update plots."""
@@ -1587,9 +1904,10 @@ class PsTAAnalysisApp(tk.Tk):
         if not hasattr(self, "right_range_values"):
             self.right_range_values = {}
 
+        spectral_quantity, spectral_units, _ = self._spectral_axis_metadata()
         if active_tab == "Time-Domain Traces":
             range_specs = [
-                ("Wavelength", "nm", self._safe_axis_min(getattr(self, "wavelength", None), 400), self._safe_axis_max(getattr(self, "wavelength", None), 800)),
+                (spectral_quantity, spectral_units, self._safe_axis_min(getattr(self, "wavelength", None), 1), self._safe_axis_max(getattr(self, "wavelength", None), 1000)),
                 ("Signal", "ΔA", self._safe_data_min(-1.0), self._safe_data_max(1.0)),
             ]
         elif active_tab == "Wavelength-Domain Traces":
@@ -1598,9 +1916,14 @@ class PsTAAnalysisApp(tk.Tk):
                 ("Signal", "ΔA", self._safe_data_min(-1.0), self._safe_data_max(1.0)),
             ]
         elif active_tab == "2D Map View":
+            default_time_min = (
+                self._safe_positive_axis_min(getattr(self, "times", None), 1)
+                if self.time_scale_var.get() == "Log"
+                else self._safe_axis_min(getattr(self, "times", None), -1)
+            )
             range_specs = [
-                ("Wavelength", "nm", self._safe_axis_min(getattr(self, "wavelength", None), 400), self._safe_axis_max(getattr(self, "wavelength", None), 800)),
-                ("Time", "ps", self._safe_positive_axis_min(getattr(self, "times", None), 1), self._safe_axis_max(getattr(self, "times", None), 1000)),
+                (spectral_quantity, spectral_units, self._safe_axis_min(getattr(self, "wavelength", None), 1), self._safe_axis_max(getattr(self, "wavelength", None), 1000)),
+                ("Time", "ps", default_time_min, self._safe_axis_max(getattr(self, "times", None), 1000)),
                 ("Color", "ΔA", self._safe_data_min(-1.0), self._safe_data_max(1.0)),
             ]
         else:
@@ -1715,15 +2038,16 @@ class PsTAAnalysisApp(tk.Tk):
             messagebox.showwarning("No Data", "Load a data file first.")
             return
 
-        if "Wavelength" in parsed_ranges:
-            wl_min, wl_max, _ = parsed_ranges["Wavelength"]
+        spectral_quantity, _, _ = self._spectral_axis_metadata()
+        if spectral_quantity in parsed_ranges:
+            wl_min, wl_max, _ = parsed_ranges[spectral_quantity]
             # Reuse the existing tab-local range variable so overlays and the Plot button stay in sync.
             if hasattr(self, "time_trace_wl_range_var"):
                 self.time_trace_wl_range_var.set(f"{wl_min:g}, {wl_max:g}")
 
         self.plot_time_slices()
         self._set_axis_limits_from_right_ranges(
-            self.ax_time, parsed_ranges, x_label="Wavelength", y_label="Signal"
+            self.ax_time, parsed_ranges, x_label=spectral_quantity, y_label="Signal"
         )
         if "Signal" in parsed_ranges:
             signal_min, signal_max, _ = parsed_ranges["Signal"]
@@ -1736,6 +2060,16 @@ class PsTAAnalysisApp(tk.Tk):
         """Redraw Wavelength-Domain Traces using right-panel time and signal ranges."""
         if not hasattr(self, 'data') or self.data is None:
             messagebox.showwarning("No Data", "Load a data file first.")
+            return
+
+        if (
+            self.time_scale_var.get() == "Log"
+            and "Time" in parsed_ranges
+            and parsed_ranges["Time"][0] <= 0
+        ):
+            messagebox.showerror(
+                "Input Error", "A logarithmic time axis requires a minimum time greater than zero."
+            )
             return
 
         self.plot_wavelength_slices()
@@ -1757,16 +2091,31 @@ class PsTAAnalysisApp(tk.Tk):
             self.map_vmin_var.set(f"{color_min:.4g}")
             self.map_vmax_var.set(f"{color_max:.4g}")
 
-        if "Time" in parsed_ranges and parsed_ranges["Time"][0] <= 0:
+        spectral_quantity, _, _ = self._spectral_axis_metadata()
+        if (
+            self.time_scale_var.get() == "Log"
+            and "Time" in parsed_ranges
+            and parsed_ranges["Time"][0] <= 0
+        ):
             messagebox.showerror(
                 "Input Error",
-                "The 2D map uses a logarithmic time axis, so its minimum time must be greater than zero."
+                "A logarithmic time axis requires a minimum time greater than zero."
+            )
+            return
+        if (
+            self.spectral_scale_var.get() == "Log"
+            and spectral_quantity in parsed_ranges
+            and parsed_ranges[spectral_quantity][0] <= 0
+        ):
+            messagebox.showerror(
+                "Input Error",
+                f"A logarithmic {spectral_quantity.lower()} axis requires a positive minimum."
             )
             return
 
         self.update_2d_map()
         self._set_axis_limits_from_right_ranges(
-            self.map_ax, parsed_ranges, x_label="Wavelength", y_label="Time"
+            self.map_ax, parsed_ranges, x_label=spectral_quantity, y_label="Time"
         )
         self.map_fig.tight_layout()
         self.canvas_tab2.draw()
@@ -1799,22 +2148,24 @@ class PsTAAnalysisApp(tk.Tk):
         data = getattr(self, "data", None)
         if data is None:
             return fallback
-        value = np.nanmin(data)
-        return float(value) if np.isfinite(value) else fallback
+        finite_data = np.asarray(data, dtype=float)
+        finite_data = finite_data[np.isfinite(finite_data)]
+        return float(finite_data.min()) if finite_data.size else fallback
 
     def _safe_data_max(self, fallback):
         """Return a finite data maximum or a fallback placeholder."""
         data = getattr(self, "data", None)
         if data is None:
             return fallback
-        value = np.nanmax(data)
-        return float(value) if np.isfinite(value) else fallback
+        finite_data = np.asarray(data, dtype=float)
+        finite_data = finite_data[np.isfinite(finite_data)]
+        return float(finite_data.max()) if finite_data.size else fallback
 
 
     def _create_status_bar(self):
         """Creates the bottom status bar"""
         status_bar_frame = ttk.Frame(self, relief='sunken', padding="2 5")
-        status_bar_frame.grid(row=1, column=0, columnspan=3, sticky='ew')
+        status_bar_frame.grid(row=1, column=0, sticky='ew')
         
         self.status_label = ttk.Label(
             status_bar_frame, 
@@ -1857,17 +2208,17 @@ class PsTAAnalysisApp(tk.Tk):
         self.update_idletasks()
 
         try:
-            self.run_matlab_analysis(file_path)
+            self.run_analysis(file_path)
             self.status_label.config(text="Status: Analysis complete.")
         except Exception as e:
-            messagebox.showerror("MATLAB Error", str(e))
+            messagebox.showerror("Analysis Error", str(e))
             self.status_label.config(text="Status: Error during analysis.")
 
-    def run_matlab_analysis(self, data_file):
+    def run_analysis(self, data_file):
         ext = Path(data_file).suffix.lower()
 
         if ext == ".json" or ext == "":
-            self._run_original_matlab_pipeline(data_file)
+            self._run_original_python_pipeline(data_file)
 
         elif ext == ".txt" or ext == ".csv":
             self._run_new_txt_pipeline(data_file)
@@ -1876,34 +2227,41 @@ class PsTAAnalysisApp(tk.Tk):
             raise ValueError(f"Unsupported file type: {ext}")
         
 
-    def _sync_working_dat_to_matlab(self):
-        """Push the current working MATLAB object into the MATLAB workspace."""
+    def _get_working_dat(self):
+        """Return the active Python experiment object, creating it if needed."""
         if self.proc_dat is None:
             self.proc_dat = self.raw_dat
         if self.proc_dat is None:
             raise ValueError("No data loaded.")
-        self.eng.workspace['dat'] = self.proc_dat
+        return self.proc_dat
 
 
-    def _run_original_matlab_pipeline(self, data_file):
+    def _run_original_python_pipeline(self, data_file):
         self.pipeline_type = "original"
-        dat = self.eng.TAExperiment(data_file)
+        dat = TAExperiment(data_file)
 
         # Keep untouched + working copies
         self.raw_dat = dat
         self.proc_dat = dat
-        self.eng.workspace['dat'] = dat
-
-        arr = np.array(self.eng.eval("dat.TAMean"))
-        times = np.array(self.eng.eval("dat.times")).flatten()
-        wavelengths = np.array(self.eng.eval("dat.wavelengths")).flatten()
+        arr = np.asarray(dat.TAMean, dtype=float)
+        times = np.asarray(dat.times, dtype=float).flatten()
+        wavelengths = np.asarray(dat.wavelengths, dtype=float).flatten()
 
         self.raw_data = arr.copy()
         self.proc_data = arr.copy()
 
         self.data = self.proc_data
         self.times = times
-        self.wavelength = wavelengths
+        self.native_spectral_axis = wavelengths.copy()
+        self.native_spectral_kind = "wavelength"
+        self.pixel_axis = np.arange(1, wavelengths.size + 1, dtype=float)
+        self.wavelength = wavelengths.copy()
+        self._updating_graph_axis_controls = True
+        self.spectral_axis_mode_var.set("Wavelength (nm)")
+        self._updating_graph_axis_controls = False
+        self._last_spectral_axis_mode = "Wavelength (nm)"
+        self._update_spectral_control_labels()
+        self._set_default_spectral_inputs()
 
         self.map_vmin_var.set(f"{arr.min():.4g}")
         self.map_vmax_var.set(f"{arr.max():.4g}")
@@ -1930,7 +2288,7 @@ class PsTAAnalysisApp(tk.Tk):
             header=None
         )
 
-        # MATLAB readmatrix will see the first column as time and the rest as data
+        # The Soliton text format uses the first column for time and the rest for data.
         n_pixels = df.shape[1] - 1
         if n_pixels <= 0:
             raise ValueError(f"Could not infer a valid energy axis from {data_file}")
@@ -1941,11 +2299,17 @@ class PsTAAnalysisApp(tk.Tk):
 
         A, E, T0 = calibration_coefficients
         energy_squared = E ** 2 - A / (pixels + T0)
-        if np.any(energy_squared <= 0):
+        # Match the masked calibration workflow used by the Soliton MATLAB
+        # example: invalid/non-positive channels are set to zero, then removed
+        # from plotted and user-selectable data after processing.
+        valid = np.isfinite(energy_squared) & (energy_squared > 0)
+        if not np.any(valid):
             raise ValueError(
-                "The Soliton calibration coefficients produce non-positive energy values."
+                "The Soliton calibration coefficients do not produce any positive energies."
             )
-        return np.sqrt(energy_squared)
+        energy_axis = np.zeros_like(energy_squared, dtype=float)
+        energy_axis[valid] = np.sqrt(energy_squared[valid])
+        return energy_axis
 
     def _get_soliton_import_options(self, data_file):
         """Collect the acquisition settings required by SolitonTAExperimentSelfContained."""
@@ -2050,70 +2414,92 @@ class PsTAAnalysisApp(tk.Tk):
 
         p = Path(data_file)
 
-        folder_path = p.parent.as_posix() + "/"
+        folder_path = p.parent
         file_name = p.name
 
-        self.eng.addpath(folder_path, nargout=0)
-
-        dat = self.eng.SolitonTAExperimentSelfContained(
+        dat = SolitonTAExperimentSelfContained(
             folder_path, file_name, options["n_scans"]
         )
 
         self.raw_dat = dat
         self.proc_dat = dat
-        self.eng.workspace["dat"] = dat
-
         energy_axis_np = self._infer_energy_axis_from_txt(
             data_file, options["calibration"]
         )
-        energy_axis = matlab.double([energy_axis_np.tolist()])  # MATLAB row vector
+        self.soliton_has_energy_calibration = options["calibration"] is not None
 
         is_mirrored = options["is_mirrored"]
         upper_bound = options["background_upper_bound"]
-        chirp_coeffs = matlab.double([options["chirp_coefficients"]])
-
-        self.eng.eval("dat = dat;", nargout=0)
-
-        self.eng.mainSoliton_SC(
-            dat,
-            energy_axis,
+        dat.mainSoliton_SC(
+            energy_axis_np,
             is_mirrored,
             upper_bound,
-            "chirpCorrectionCoefficients",
-            chirp_coeffs,
-            nargout=0
+            options["chirp_coefficients"],
         )
 
         self.proc_dat = dat
-        self.eng.workspace["dat"] = dat
 
+        self._reset_spectral_mode_on_pull = True
         self._pull_current_dat_arrays()
         self.update_2d_map()
 
     def _pull_current_dat_arrays(self):
         """
-        Pull TA mean, time axis, and x-axis from the current MATLAB dat object.
-        Handles both original Soliton.
+        Pull TA mean, time axis, and x-axis from the current Python dat object.
+        Handles both original and Soliton pipelines.
         """
         if self.proc_dat is None:
-            raise ValueError("No MATLAB dat object is loaded.")
-
-        self.eng.workspace["dat"] = self.proc_dat
+            raise ValueError("No experiment object is loaded.")
 
         if self.pipeline_type == "soliton":
-            arr = np.array(self.eng.eval("dat.TAMeanSortedBackgroundSub_CC"))
-            times = np.array(self.eng.eval("dat.timesSorted_CC")).flatten()
-            xaxis = np.array(self.eng.eval("dat.energyAxis_CC")).flatten()
+            arr = np.asarray(self.proc_dat.TAMeanSortedBackgroundSub_CC, dtype=float)
+            times = np.asarray(self.proc_dat.timesSorted_CC, dtype=float).flatten()
+            xaxis = np.asarray(self.proc_dat.energyAxis_CC, dtype=float).flatten()
+
+            if getattr(self, "soliton_has_energy_calibration", False):
+                spectral_mask = np.isfinite(xaxis) & (xaxis > 0)
+                native_kind = "energy"
+                default_mode = "Energy (eV)"
+            else:
+                spectral_mask = np.isfinite(xaxis) & (xaxis >= 1)
+                native_kind = "pixel"
+                default_mode = "Pixel"
+
+            if not np.any(spectral_mask):
+                raise ValueError("No valid non-negative Soliton spectral channels remain after masking.")
+            arr = arr[:, spectral_mask]
+            native_axis = xaxis[spectral_mask]
+            pixel_axis = np.arange(1, xaxis.size + 1, dtype=float)[spectral_mask]
 
         else:
-            arr = np.array(self.eng.eval("dat.TAMean"))
-            times = np.array(self.eng.eval("dat.times")).flatten()
-            xaxis = np.array(self.eng.eval("dat.wavelengths")).flatten()
+            arr = np.asarray(self.proc_dat.TAMean, dtype=float)
+            times = np.asarray(self.proc_dat.times, dtype=float).flatten()
+            xaxis = np.asarray(self.proc_dat.wavelengths, dtype=float).flatten()
+            spectral_mask = np.isfinite(xaxis) & (xaxis > 0)
+            arr = arr[:, spectral_mask]
+            native_axis = xaxis[spectral_mask]
+            pixel_axis = np.arange(1, xaxis.size + 1, dtype=float)[spectral_mask]
+            native_kind = "wavelength"
+            default_mode = "Wavelength (nm)"
 
         self.proc_data = arr.copy()
         self.data = self.proc_data
         self.times = times
-        self.wavelength = xaxis
+        self.native_spectral_axis = native_axis
+        self.native_spectral_kind = native_kind
+        self.pixel_axis = pixel_axis
+
+        reset_mode = getattr(self, "_reset_spectral_mode_on_pull", False)
+        if reset_mode:
+            self._updating_graph_axis_controls = True
+            self.spectral_axis_mode_var.set(default_mode)
+            self._updating_graph_axis_controls = False
+            self._last_spectral_axis_mode = default_mode
+            self._reset_spectral_mode_on_pull = False
+        self._set_display_spectral_axis(self.spectral_axis_mode_var.get())
+        self._update_spectral_control_labels()
+        if reset_mode:
+            self._set_default_spectral_inputs()
 
         self.map_vmin_var.set(f"{np.nanmin(arr):.4g}")
         self.map_vmax_var.set(f"{np.nanmax(arr):.4g}")
@@ -2158,7 +2544,9 @@ class PsTAAnalysisApp(tk.Tk):
             scale = overlay.get("scale")
             if df is None or scale is None:
                 continue
-            overlay_wavelengths = df["Wavelength (nm)"].to_numpy(dtype=float)
+            overlay_wavelengths = self._wavelengths_to_current_spectral_axis(
+                df["Wavelength (nm)"].to_numpy(dtype=float)
+            )
             overlay_values = float(scale) * df["Absorbance (AU)"].to_numpy(dtype=float)
             overlay_mask = (
                 np.isfinite(overlay_wavelengths)
@@ -2237,18 +2625,18 @@ class PsTAAnalysisApp(tk.Tk):
         if len(self.wavelength) != self.data.shape[1]:
             messagebox.showerror(
                 "Data Error",
-                "The number of wavelength points does not match the number of data columns."
+                "The number of spectral-axis points does not match the number of data columns."
             )
             return False
 
         if not np.any(np.isfinite(self.times)) or not np.any(np.isfinite(self.wavelength)):
-            messagebox.showerror("Data Error", "Time or wavelength axes contain no finite values.")
+            messagebox.showerror("Data Error", "Time or spectral axes contain no finite values.")
             return False
 
         return True
 
     def _current_time_domain_wavelength_range(self):
-        """Parse the tab-local wavelength range field, if the user entered one."""
+        """Parse the tab-local spectral range field, if the user entered one."""
         if getattr(self, "time_trace_wl_range_var", None) is None:
             return None
 
@@ -2256,10 +2644,11 @@ class PsTAAnalysisApp(tk.Tk):
         if not range_text:
             return None
 
-        return self._parse_range_values(range_text, "wavelength")
+        spectral_quantity, _, _ = self._spectral_axis_metadata()
+        return self._parse_range_values(range_text, spectral_quantity.lower())
 
     def _time_domain_wavelength_mask(self, wl_range):
-        """Return a valid boolean mask for the selected time-domain wavelength range."""
+        """Return a valid mask for the selected time-domain spectral range."""
         finite_mask = np.isfinite(self.wavelength)
 
         if wl_range is None:
@@ -2269,12 +2658,16 @@ class PsTAAnalysisApp(tk.Tk):
             mask = finite_mask & (self.wavelength >= wl_min) & (self.wavelength <= wl_max)
 
         if not np.any(mask):
+            spectral_quantity, spectral_units, _ = self._spectral_axis_metadata()
             if wl_range is None:
-                messagebox.showerror("Range Error", "No finite wavelengths are available to plot.")
+                messagebox.showerror(
+                    "Range Error", f"No finite {spectral_quantity.lower()} values are available to plot."
+                )
             else:
                 messagebox.showerror(
                     "Range Error",
-                    f"No wavelength channels found in {wl_range[0]:g}-{wl_range[1]:g}."
+                    f"No {spectral_quantity.lower()} channels found in "
+                    f"{wl_range[0]:g}-{wl_range[1]:g} {spectral_units}."
                 )
             return None
 
@@ -2434,7 +2827,7 @@ class PsTAAnalysisApp(tk.Tk):
             )
         else:
             self.status_label.config(
-                text=f"Status: {label} loaded, but no points are inside the current wavelength range."
+                text=f"Status: {label} loaded, but no points are inside the current spectral range."
             )
 
     def _plot_or_refresh_time_trace_overlay(self, overlay_key, redraw=True, warn_if_empty=False):
@@ -2458,7 +2851,9 @@ class PsTAAnalysisApp(tk.Tk):
             )
             return False
 
-        wavelengths = df["Wavelength (nm)"].to_numpy(dtype=float)
+        wavelengths = self._wavelengths_to_current_spectral_axis(
+            df["Wavelength (nm)"].to_numpy(dtype=float)
+        )
         scaled_absorbance = float(scale) * df["Absorbance (AU)"].to_numpy(dtype=float)
         valid = np.isfinite(wavelengths) & np.isfinite(scaled_absorbance)
         wavelengths = wavelengths[valid]
@@ -2560,7 +2955,7 @@ class PsTAAnalysisApp(tk.Tk):
         return float(np.nanmin(self.wavelength)), float(np.nanmax(self.wavelength))
 
     def plot_time_slices(self):
-        """Plot ΔA vs wavelength for each requested time value (Tab 1)."""
+        """Plot spectral slices at the requested time values (Tab 1)."""
         if not self._validate_time_domain_data():
             return
 
@@ -2585,7 +2980,8 @@ class PsTAAnalysisApp(tk.Tk):
 
         self.ax_time.cla()
         self.ax_time.set_title("Time-Domain Traces")
-        self.ax_time.set_xlabel("Wavelength (nm)")
+        spectral_quantity, spectral_units, _ = self._spectral_axis_metadata()
+        self.ax_time.set_xlabel(f"{spectral_quantity} ({spectral_units})")
         self.ax_time.set_ylabel("ΔA")
         self.ax_time.grid(True)
         self.ax_time.axhline(0, color='gray', lw=0.8, ls='--')
@@ -2612,14 +3008,19 @@ class PsTAAnalysisApp(tk.Tk):
             self.ax_time.set_xlim(*full_range)
             self._autoscale_time_trace_yaxis(full_range)
 
+        self._apply_selected_scale(
+            self.ax_time, "x", self.spectral_scale_var.get(), self.wavelength
+        )
+
         self._refresh_time_trace_overlays()
         self._refresh_time_trace_legend()
         self.fig_time.tight_layout()
         self.canvas_time.draw()
+        self._update_fitting_ta_chart(self.ax_time)
         self.status_label.config(text="Status: Time-domain traces plotted.")
 
     def plot_wavelength_slices(self):
-        """Plot ΔA vs time for each requested wavelength value.
+        """Plot ΔA vs time for each requested spectral coordinate.
 
         If an averaging range is provided, each kinetic trace is averaged over
         wl_req +/- range_nm.
@@ -2632,7 +3033,10 @@ class PsTAAnalysisApp(tk.Tk):
             messagebox.showwarning("No Data", "Load a data file first.")
             return
 
-        targets = self._parse_slice_values(self.wl_slice_var.get(), "wavelength")
+        spectral_quantity, spectral_units, _ = self._spectral_axis_metadata()
+        targets = self._parse_slice_values(
+            self.wl_slice_var.get(), spectral_quantity.lower()
+        )
         if targets is None:
             return
 
@@ -2643,8 +3047,7 @@ class PsTAAnalysisApp(tk.Tk):
         except ValueError:
             messagebox.showerror(
                 "Input Error",
-                'Invalid wavelength averaging range — enter a non-negative number.\n'
-                'Example: "10" averages each trace over wavelength +/- 10 nm.'
+                f"Invalid {spectral_quantity.lower()} averaging range — enter a non-negative number."
             )
             return
 
@@ -2660,11 +3063,11 @@ class PsTAAnalysisApp(tk.Tk):
 
         for wl_req, color in zip(targets, colors):
             if avg_range == 0:
-                # Original behavior: use nearest wavelength channel
+                # Original behavior: use nearest spectral channel.
                 idx = int(np.argmin(np.abs(self.wavelength - wl_req)))
                 wl_actual = self.wavelength[idx]
                 trace = self.data[:, idx]
-                label = f"{wl_actual:.4g} nm"
+                label = f"{wl_actual:.4g} {spectral_units}"
 
             else:
                 wl_min = wl_req - avg_range
@@ -2674,7 +3077,8 @@ class PsTAAnalysisApp(tk.Tk):
                 if not np.any(mask):
                     messagebox.showwarning(
                         "Range Warning",
-                        f"No wavelength channels found in {wl_min:g}-{wl_max:g} nm."
+                        f"No {spectral_quantity.lower()} channels found in "
+                        f"{wl_min:g}-{wl_max:g} {spectral_units}."
                     )
                     continue
 
@@ -2683,7 +3087,10 @@ class PsTAAnalysisApp(tk.Tk):
 
                 actual_min = np.nanmin(self.wavelength[mask])
                 actual_max = np.nanmax(self.wavelength[mask])
-                label = f"{wl_req:.4g} nm avg ({actual_min:.4g}-{actual_max:.4g})"
+                label = (
+                    f"{wl_req:.4g} {spectral_units} avg "
+                    f"({actual_min:.4g}-{actual_max:.4g})"
+                )
 
             self.ax_wl.plot(
                 self.times,
@@ -2693,15 +3100,23 @@ class PsTAAnalysisApp(tk.Tk):
                 label=label
             )
 
+        self._apply_selected_scale(
+            self.ax_wl, "x", self.time_scale_var.get(), self.times
+        )
+
         self.ax_wl.legend(fontsize=8, framealpha=0.7)
         self.fig_wl.tight_layout()
         self.canvas_wl.draw()
+        self._update_fitting_ta_chart(self.ax_wl)
 
         if avg_range == 0:
             self.status_label.config(text="Status: Wavelength-domain traces plotted.")
         else:
             self.status_label.config(
-                text=f"Status: Wavelength-domain traces averaged over +/- {avg_range:g} nm."
+                text=(
+                    f"Status: Spectral traces averaged over +/- {avg_range:g} "
+                    f"{spectral_units}."
+                )
             )
 
     def _parse_range_values(self, text: str, label: str):
@@ -2724,11 +3139,14 @@ class PsTAAnalysisApp(tk.Tk):
 
 
     def apply_time_trace_wavelength_range(self):
-        """Limit the visible wavelength range in the time-domain traces plot only."""
+        """Limit the visible spectral range in the time-domain traces plot only."""
         if not self._validate_time_domain_data():
             return
 
-        parsed = self._parse_range_values(self.time_trace_wl_range_var.get(), "wavelength")
+        spectral_quantity, spectral_units, _ = self._spectral_axis_metadata()
+        parsed = self._parse_range_values(
+            self.time_trace_wl_range_var.get(), spectral_quantity.lower()
+        )
         if parsed is None:
             return
 
@@ -2741,11 +3159,14 @@ class PsTAAnalysisApp(tk.Tk):
         # legends are all regenerated from the same range state.
         self.plot_time_slices()
         self.status_label.config(
-            text=f"Status: Time-trace wavelength view set to {wl_min:g} - {wl_max:g} nm."
+            text=(
+                f"Status: Time-trace {spectral_quantity.lower()} view set to "
+                f"{wl_min:g} - {wl_max:g} {spectral_units}."
+            )
         )
 
     def reset_time_trace_wavelength_range(self):
-        """Reset the time-domain traces x-axis to the full wavelength span."""
+        """Reset the time-domain traces x-axis to the full spectral span."""
         if self.wavelength is None:
             return
         self.time_trace_wl_range_var.set(f"{np.nanmin(self.wavelength):.4g}, {np.nanmax(self.wavelength):.4g}")
@@ -2757,12 +3178,15 @@ class PsTAAnalysisApp(tk.Tk):
             self.fig_time.tight_layout()
             self.canvas_time.draw()
 
-        self.status_label.config(text="Status: Time-trace wavelength view reset.")
+        self.status_label.config(text="Status: Time-trace spectral view reset.")
 
     def _clear_slice_axis(self, ax, canvas, xlabel, ylabel, title):
         """Reset a slice plot to its blank placeholder state."""
         ax.cla()
         ax.set_title(title)
+        if ax is getattr(self, "ax_time", None):
+            spectral_quantity, spectral_units, _ = self._spectral_axis_metadata()
+            xlabel = f"{spectral_quantity} ({spectral_units})"
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.grid(True)
@@ -2787,19 +3211,32 @@ class PsTAAnalysisApp(tk.Tk):
             self.update_2d_map()
 
     def update_2d_map(self):
-        time_min = self._safe_positive_axis_min(getattr(self, "times", None), None)
-        if time_min is None:
+        if self.data is None or self.times is None or self.wavelength is None:
+            return
+
+        time_values = np.asarray(self.times, dtype=float)
+        spectral_values = np.asarray(self.wavelength, dtype=float)
+        time_mask = np.isfinite(time_values)
+        spectral_mask = np.isfinite(spectral_values)
+        if self._matplotlib_scale(self.time_scale_var.get()) == "log":
+            time_mask &= time_values > 0
+        if self._matplotlib_scale(self.spectral_scale_var.get()) == "log":
+            spectral_mask &= spectral_values > 0
+        if np.count_nonzero(time_mask) < 2 or np.count_nonzero(spectral_mask) < 2:
             messagebox.showwarning(
-                "Invalid Time Axis",
-                "The 2D map requires at least one finite time value greater than zero for its logarithmic scale."
+                "Invalid Graph Scale",
+                "The selected log scale requires at least two positive finite axis values."
             )
             return
 
-        finite_times = np.asarray(self.times, dtype=float)
-        finite_times = finite_times[np.isfinite(finite_times)]
-        time_max = float(np.max(finite_times))
-        if time_max <= time_min:
-            time_max = time_min * 10
+        plotted_times = time_values[time_mask]
+        plotted_spectral = spectral_values[spectral_mask]
+        plotted_data = self.data[np.ix_(time_mask, spectral_mask)]
+        time_order = np.argsort(plotted_times)
+        spectral_order = np.argsort(plotted_spectral)
+        plotted_times = plotted_times[time_order]
+        plotted_spectral = plotted_spectral[spectral_order]
+        plotted_data = plotted_data[np.ix_(time_order, spectral_order)]
 
         self.map_fig.clear()
         
@@ -2833,28 +3270,29 @@ class PsTAAnalysisApp(tk.Tk):
         color_norm = TwoSlopeNorm(vmin=norm_vmin, vcenter=0.0, vmax=norm_vmax)
 
         # Clamp the data so values outside [vmin, vmax] are pinned to the boundary
-        display_data = np.clip(self.data, vmin, vmax)
+        display_data = np.clip(plotted_data, vmin, vmax)
         
-        # Plot data
-        im = self.map_ax.imshow(
+        # pcolormesh preserves calibrated/nonlinear axes and descending
+        # wavelength axes, unlike an image extent.
+        im = self.map_ax.pcolormesh(
+            plotted_spectral,
+            plotted_times,
             display_data,
-            aspect='auto',
-            origin='lower',
-            extent=[
-                self.wavelength.min(),
-                self.wavelength.max(),
-                time_min,
-                time_max
-            ],
+            shading="auto",
             cmap="RdBu",
             norm=color_norm,
         )
 
+        spectral_quantity, spectral_units, _ = self._spectral_axis_metadata()
         self.map_ax.set_title("2D Map View (TA Mean)")
-        self.map_ax.set_xlabel("Wavelength (nm)")
-        self.map_ax.set_ylabel("Time (ps, log scale)")
-        self.map_ax.set_yscale("log")
-        self.map_ax.set_ylim(time_min, time_max)
+        self.map_ax.set_xlabel(f"{spectral_quantity} ({spectral_units})")
+        self.map_ax.set_ylabel("Time (ps)")
+        self._apply_selected_scale(
+            self.map_ax, "x", self.spectral_scale_var.get(), plotted_spectral
+        )
+        self._apply_selected_scale(
+            self.map_ax, "y", self.time_scale_var.get(), plotted_times
+        )
 
         # Add colorbar if toggled
         if self.colorbar_toggle_var.get():
@@ -2875,7 +3313,8 @@ class PsTAAnalysisApp(tk.Tk):
 
         upper_val = simpledialog.askfloat(
             "Background Correction",
-            "Enter upper bound for background subtraction:",
+            "Background upper time bound (ps):\n"
+            "Use a pre-signal delay. The nearest measured delay is included in the average.",
             parent=self
         )
         if upper_val is None:
@@ -2887,45 +3326,25 @@ class PsTAAnalysisApp(tk.Tk):
         self.update_idletasks()
 
         try:
-            # Start from the current working copy
-            self._sync_working_dat_to_matlab()
-
-            # IMPORTANT: assign the result back to dat in MATLAB
+            dat = self._get_working_dat()
             if self.pipeline_type == "soliton":
-                self.eng.eval(
-                    f"backgroundSubtractSoliton_SC(dat, {float(upper_val)});",
-                    nargout=0
+                dat.backgroundSubtractSoliton_SC(float(upper_val))
+                detail = (
+                    f"Background correction complete: averaged {dat.backgroundSubtractionUpperBoundInxed + 1} "
+                    f"delays through {dat.backgroundSubtractionUpperBound:.6g} ps."
                 )
-
-                # Keep the current chirp-corrected field in sync after new background subtraction.
-                self.eng.eval(
-                    "chirpCorrectionSoliton_SC(dat, dat.chirpCorrectionCoefficients);",
-                    nargout=0
-                )
-
             else:
-                self.eng.eval(
-                    f"subtractTABackground(dat, {float(upper_val)});",
-                    nargout=0
-                )
+                dat.subtractTABackground(float(upper_val))
+                detail = "Background correction complete."
 
-            self.proc_dat = self.eng.workspace["dat"]
-
-            self._pull_current_dat_arrays()
-
-            self.update_2d_map()
-
-            self.status_label.config(text="Status: Background correction complete.")
-            messagebox.showinfo("Success", "Background subtraction finished successfully.")
+            self._refresh_dat(detail)
 
         except Exception as e:
-            messagebox.showerror("MATLAB Error", str(e))
+            messagebox.showerror("Processing Error", str(e))
             self.status_label.config(text=f"Status: Error during background correction. {e}")
 
     def dispersion_correction(self):
         """Show options for dispersion correction."""
-        if getattr(self, "eng", None) is None:
-            return messagebox.showerror("MATLAB Not Running", "MATLAB engine not available.")
         if self.data is None:
             return messagebox.showwarning("No Data", "Load data before running dispersion correction.")
 
@@ -2946,110 +3365,318 @@ class PsTAAnalysisApp(tk.Tk):
             ).pack(padx=20, pady=(0, 4))
             ttk.Button(
                 chooser,
+                text="Interactive Point-Selection Correction",
+                command=lambda: [chooser.destroy(), self._open_interactive_dispersion_dialog()],
+            ).pack(fill="x", padx=20, pady=4)
+            ttk.Button(
+                chooser,
                 text="Apply Soliton Chirp Correction",
                 command=lambda: [chooser.destroy(), self._open_soliton_chirp_dialog()],
             ).pack(fill="x", padx=20, pady=4)
             chooser.bind("<Escape>", lambda e: chooser.destroy())
             return
 
-        # Using lambda allows us to destroy the window and call the function in one line
-        ttk.Button(chooser, text="Correct Dispersions (MATLAB popup)", 
-                   command=lambda: [chooser.destroy(), self._call_matlab_correctdispersion()]).pack(fill='x', padx=20, pady=4)
-        ttk.Button(chooser, text="Apply External Dispersion Correction", 
-                   command=lambda: [chooser.destroy(), self._open_apply_external_dialog()]).pack(fill='x', padx=20, pady=4)
+        ttk.Button(
+            chooser,
+            text="Interactive Point-Selection Correction",
+            command=lambda: [chooser.destroy(), self._open_interactive_dispersion_dialog()],
+        ).pack(fill='x', padx=20, pady=4)
+        ttk.Button(
+            chooser,
+            text="Apply External Coefficients",
+            command=lambda: [chooser.destroy(), self._open_apply_external_dialog()],
+        ).pack(fill="x", padx=20, pady=4)
 
         chooser.bind("<Escape>", lambda e: chooser.destroy())
 
-    def _call_matlab_correctdispersion(self):
-        """Call dispersion correction on the current working copy."""
-        if self.pipeline_type == "soliton":
-            self._open_soliton_chirp_dialog()
-            return
-
-        self._update_status("Launching MATLAB dispersion-correction popup...")
-        try:
-            self._sync_working_dat_to_matlab()
-
-            cmd = "dat.correctDispersion();"
-            self.eng.eval(cmd, nargout=0)
-
-            self.proc_dat = self.eng.workspace['dat']
-            self._refresh_dat_from_matlab("Dispersion correction (MATLAB) finished.")
-        except Exception as e:
-            messagebox.showerror("MATLAB Error", f"Error while calling correctdispersion:\n{e}")
-            self._update_status("Error calling correctdispersion.")
-
     def _open_apply_external_dialog(self):
-        """Prompt user for coefficients using a custom Toplevel and apply them in MATLAB."""
+        """Prompt for the legacy quadratic dispersion coefficients and apply them."""
         if self.pipeline_type == "soliton":
             self._open_soliton_chirp_dialog()
             return
 
-        default_vec = [-7.44208608527694e-06, 0.00672243358275736, -0.951026821920219]
+        dat = self._get_working_dat()
+        if not isinstance(dat, TAExperiment):
+            return messagebox.showerror(
+                "Dispersion Correction",
+                "External dispersion correction requires a TAExperiment data set.",
+            )
+
+        default_coefficients = [
+            -7.44208608527694e-06,
+            0.00672243358275736,
+            -0.951026821920219,
+        ]
+        loaded_coefficients = np.asarray(
+            getattr(dat, "dispersionFitCoefficients", []), dtype=float
+        ).reshape(-1)
+        if loaded_coefficients.size == 3 and np.all(np.isfinite(loaded_coefficients)):
+            default_coefficients = loaded_coefficients.tolist()
 
         dlg = tk.Toplevel(self)
-        dlg.title("Apply External Dispersion Correction")
+        dlg.title("Apply External Dispersion Coefficients")
         dlg.transient(self)
         dlg.grab_set()
         dlg.resizable(False, False)
-        dlg.geometry("520x160")
+        dlg.geometry("600x220")
 
-        ttk.Label(dlg, text="Enter three dispersion coefficients (comma or space separated):", 
-                  wraplength=480, padding=8).pack(anchor="w")
+        ttk.Label(
+            dlg,
+            text=(
+                "Enter a2, a1, a0 (highest power first), separated by commas or spaces.\n"
+                "The delay correction is a2·pixel² + a1·pixel + a0, in ps."
+            ),
+            wraplength=560,
+            padding=8,
+        ).pack(anchor="w")
 
-        entry_var = tk.StringVar(value=", ".join(f"{v:.18g}" for v in default_vec))
-        ttk.Entry(dlg, textvariable=entry_var, width=60).pack(padx=8, pady=6, fill='x')
+        entry_var = tk.StringVar(
+            value=", ".join(f"{value:.18g}" for value in default_coefficients)
+        )
+        entry = ttk.Entry(dlg, textvariable=entry_var, width=72)
+        entry.pack(fill="x", padx=8, pady=6)
+        entry.focus_set()
+        entry.selection_range(0, "end")
 
-        status_lbl = ttk.Label(dlg, text="", foreground="red")
-        status_lbl.pack(anchor="w", padx=8)
+        status_var = tk.StringVar(value="")
+        ttk.Label(dlg, textvariable=status_var, foreground="red").pack(
+            anchor="w", padx=8
+        )
 
-        btn_frame = ttk.Frame(dlg)
-        btn_frame.pack(fill='x', pady=10, padx=8)
-
-        def on_ok(event=None):
-            txt = entry_var.get().strip()
+        def apply_coefficients(event=None):
             try:
-                parts = [p for p in txt.replace(",", " ").split() if p]
-                if len(parts) != 3:
-                    raise ValueError("Please enter exactly 3 numbers.")
-                coeffs = [float(p) for p in parts]
-            except Exception as ex:
-                status_lbl.config(text=f"Invalid input: {ex}")
+                coefficients = [
+                    float(value)
+                    for value in entry_var.get().replace(",", " ").split()
+                ]
+                if len(coefficients) != 3 or not np.all(np.isfinite(coefficients)):
+                    raise ValueError("Enter exactly three finite numbers.")
+                dat.applyExternalDispersionCorrection(coefficients)
+            except Exception as exc:
+                status_var.set(f"Correction failed: {exc}")
+                self._update_status("Error during external dispersion correction.")
                 return
 
             dlg.destroy()
+            self._refresh_dat("External dispersion correction applied.")
 
-            self._update_status("Applying external dispersion correction...")
+        buttons = ttk.Frame(dlg, padding=8)
+        buttons.pack(fill="x", side="bottom")
+        ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(
+            side="right", padx=4
+        )
+        ttk.Button(buttons, text="Apply", command=apply_coefficients).pack(
+            side="right", padx=4
+        )
+        dlg.bind("<Return>", apply_coefficients)
+        dlg.bind("<Escape>", lambda event: dlg.destroy())
+
+    def _open_interactive_dispersion_dialog(self):
+        """Pick time-zero points on the TA map, fit them, and correct dispersion."""
+        dat = self._get_working_dat()
+        is_soliton = self.pipeline_type == "soliton"
+        if not isinstance(dat, (TAExperiment, SolitonTAExperimentSelfContained)):
+            return messagebox.showerror(
+                "Dispersion Correction",
+                "Interactive dispersion correction requires a TA experiment.",
+            )
+
+        if is_soliton:
+            # Fit the unshifted baseline-subtracted map. Retain original pixel
+            # numbers even when invalid energy-calibration channels are hidden.
+            pixels = np.arange(1, dat.energyAxis.size + 1, dtype=float)
+            times = np.asarray(dat.timesSorted, dtype=float).reshape(-1)
+            ta_data = np.asarray(dat.TAMeanSortedBackgroundSub, dtype=float)
+            valid = np.isfinite(dat.energyAxis) & (dat.energyAxis > 0)
+            pixels, ta_data = pixels[valid], ta_data[:, valid]
+        else:
+            pixels = np.asarray(dat.pixels, dtype=float).reshape(-1)
+            times = np.asarray(dat.times, dtype=float).reshape(-1)
+            ta_data = np.asarray(dat.TAMean, dtype=float)
+        if ta_data.shape != (times.size, pixels.size):
+            return messagebox.showerror(
+                "Dispersion Correction", "The TA matrix does not match its pixel and time axes."
+            )
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Interactive Dispersion Correction")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.geometry("1050x800")
+        dlg.minsize(850, 650)
+
+        ttk.Label(
+            dlg,
+            text=(
+                "Left-click the time-zero feature across the spectrum. Right-click removes the nearest point. "
+                "Use the Matplotlib toolbar to zoom or pan, choose the polynomial order, then Fit and Apply."
+            ),
+            wraplength=1000,
+            padding=8,
+        ).pack(anchor="w")
+
+        controls = ttk.Frame(dlg, padding=(8, 0))
+        controls.pack(fill="x")
+        ttk.Label(controls, text="Polynomial order:").pack(side="left")
+        order_var = tk.IntVar(value=2)
+        ttk.Spinbox(controls, from_=1, to=4, width=4, textvariable=order_var).pack(
+            side="left", padx=(5, 15)
+        )
+        status_var = tk.StringVar(value="Click at least three time-zero points for a quadratic fit.")
+        ttk.Label(controls, textvariable=status_var).pack(side="left", fill="x", expand=True)
+
+        figure = Figure(figsize=(9.5, 6.2), dpi=100)
+        axes = figure.add_subplot(111)
+        finite = ta_data[np.isfinite(ta_data)]
+        color_limit = float(np.nanpercentile(np.abs(finite), 99)) if finite.size else 1.0
+        if not np.isfinite(color_limit) or color_limit == 0:
+            color_limit = 1.0
+        mesh = axes.pcolormesh(
+            pixels,
+            times,
+            ta_data,
+            shading="auto",
+            cmap="RdBu_r",
+            vmin=-color_limit,
+            vmax=color_limit,
+        )
+        figure.colorbar(mesh, ax=axes, label="Transient Absorption / OD")
+        axes.set(
+            title="Click the time-zero feature",
+            xlabel="Spectrometer pixel",
+            ylabel="Time delay / ps",
+        )
+        selected_points, = axes.plot([], [], "o", color="yellow", markeredgecolor="black", label="Selected points")
+        fitted_curve, = axes.plot([], [], color="lime", linewidth=2, label="Polynomial fit")
+        axes.legend(loc="best")
+
+        canvas = FigureCanvasTkAgg(figure, master=dlg)
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=(4, 0))
+        toolbar_frame = ttk.Frame(dlg)
+        toolbar_frame.pack(fill="x", padx=8)
+        NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=True).update()
+
+        point_x = []
+        point_y = []
+        fit_coefficients = None
+
+        def redraw_points():
+            selected_points.set_data(point_x, point_y)
+            canvas.draw_idle()
+
+        def clear_fit():
+            nonlocal fit_coefficients
+            fit_coefficients = None
+            fitted_curve.set_data([], [])
+
+        def fit_points(show_errors=True):
+            nonlocal fit_coefficients
             try:
-                self._sync_working_dat_to_matlab()
+                degree = int(order_var.get())
+            except (TypeError, ValueError, tk.TclError):
+                if show_errors:
+                    status_var.set("Polynomial order must be an integer from 1 through 4.")
+                return False
+            if degree < 1 or degree > 4:
+                status_var.set("Polynomial order must be from 1 through 4.")
+                return False
+            if len(point_x) < degree + 1 or len(set(point_x)) < degree + 1:
+                status_var.set(f"Select at least {degree + 1} points with distinct pixel positions.")
+                return False
+            try:
+                fit_coefficients = TAExperiment.fitDispersionCoefficients(point_x, point_y, degree)
+            except ValueError as exc:
+                status_var.set(str(exc))
+                return False
+            if is_soliton:
+                # The Soliton processor always expects a4 through a0.
+                fit_coefficients = np.pad(fit_coefficients, (5 - fit_coefficients.size, 0))
+            fit_y = np.polyval(fit_coefficients, pixels)
+            fitted_curve.set_data(pixels, fit_y)
+            coefficient_text = ", ".join(f"{value:.6g}" for value in fit_coefficients)
+            status_var.set(f"Order {degree} fit: [{coefficient_text}]")
+            canvas.draw_idle()
+            return True
 
-                vec_str = f"[{' '.join(map(str, coeffs))}]"
-                self.eng.eval(
-                    f"applyExternalDispersionCorrection(dat, {vec_str});",
-                    nargout=0
-                )
+        def on_map_click(event):
+            if event.inaxes is not axes or event.xdata is None or event.ydata is None:
+                return
+            # Ignore map clicks while the toolbar's pan or zoom mode is active.
+            toolbar = getattr(canvas, "toolbar", None)
+            if toolbar is not None and getattr(toolbar, "mode", ""):
+                return
+            clear_fit()
+            if event.button == 1:
+                point_x.append(float(event.xdata))
+                point_y.append(float(event.ydata))
+                status_var.set(f"{len(point_x)} point(s) selected.")
+            elif event.button == 3 and point_x:
+                x_scale = float(np.ptp(pixels)) or 1.0
+                y_scale = float(np.ptp(times)) or 1.0
+                distances = [
+                    ((x - event.xdata) / x_scale) ** 2 + ((y - event.ydata) / y_scale) ** 2
+                    for x, y in zip(point_x, point_y)
+                ]
+                nearest = int(np.argmin(distances))
+                point_x.pop(nearest)
+                point_y.pop(nearest)
+                status_var.set(f"{len(point_x)} point(s) selected.")
+            redraw_points()
 
-                self.proc_dat = self.eng.workspace['dat']
-                self._refresh_dat_from_matlab("External dispersion correction applied.")
-            except Exception as e:
-                messagebox.showerror("MATLAB Error", f"Error applying external correction:\n{e}")
-                self._update_status("Error during external dispersion correction.")
-        def on_cancel(event=None):
+        def reset_points():
+            point_x.clear()
+            point_y.clear()
+            clear_fit()
+            status_var.set("Selection cleared.")
+            redraw_points()
+
+        def show_near_zero():
+            low = max(float(np.nanmin(times)), -2.0)
+            high = min(float(np.nanmax(times)), 2.0)
+            if low < high:
+                axes.set_ylim(low, high)
+                canvas.draw_idle()
+
+        def show_full_range():
+            axes.set_ylim(float(np.nanmin(times)), float(np.nanmax(times)))
+            canvas.draw_idle()
+
+        def apply_fit():
+            # Refit here so a last-minute polynomial-order change is honored.
+            if not fit_points():
+                return
+            self._update_status("Applying interactive dispersion correction...")
+            try:
+                if is_soliton:
+                    dat.chirpCorrectionSoliton_SC(fit_coefficients)
+                else:
+                    dat.correctDispersion(fit_coefficients)
+            except Exception as exc:
+                status_var.set(f"Correction failed: {exc}")
+                self._update_status("Error during dispersion correction.")
+                return
             dlg.destroy()
+            self._refresh_dat("Interactive dispersion correction applied.")
 
-        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side='right', padx=6)
-        ttk.Button(btn_frame, text="Apply", command=on_ok).pack(side='right')
+        canvas.mpl_connect("button_press_event", on_map_click)
+        show_near_zero()
 
-        dlg.bind("<Return>", on_ok)
-        dlg.bind("<Escape>", on_cancel)
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.pack(fill="x", pady=8, padx=8)
+        ttk.Button(btn_frame, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
+        ttk.Button(btn_frame, text="Fit and Apply", command=apply_fit).pack(side="right", padx=4)
+        ttk.Button(btn_frame, text="Fit", command=fit_points).pack(side="right", padx=4)
+        ttk.Button(btn_frame, text="Reset Points", command=reset_points).pack(side="right", padx=4)
+        ttk.Button(btn_frame, text="Full Delay Range", command=show_full_range).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Near Time Zero", command=show_near_zero).pack(side="left", padx=4)
+        dlg.bind("<Escape>", lambda event: dlg.destroy())
 
     def _open_soliton_chirp_dialog(self):
-        """Apply the five-coefficient Soliton chirp polynomial without MATLAB popups."""
+        """Apply the five-coefficient Soliton chirp polynomial."""
         default_coeffs = [0.0] * 5
         try:
-            self._sync_working_dat_to_matlab()
             loaded_coeffs = np.asarray(
-                self.eng.eval("dat.chirpCorrectionCoefficients"), dtype=float
+                self._get_working_dat().chirpCorrectionCoefficients, dtype=float
             ).reshape(-1)
             if loaded_coeffs.size == 5 and np.all(np.isfinite(loaded_coeffs)):
                 default_coeffs = loaded_coeffs.tolist()
@@ -3062,8 +3689,7 @@ class PsTAAnalysisApp(tk.Tk):
         dlg.title("Soliton Chirp Correction")
         dlg.transient(self)
         dlg.grab_set()
-        dlg.resizable(False, False)
-        dlg.geometry("650x190")
+        dlg.minsize(650, 240)
 
         ttk.Label(
             dlg,
@@ -3077,12 +3703,14 @@ class PsTAAnalysisApp(tk.Tk):
         ).pack(anchor="w")
 
         entry_var = tk.StringVar(value=", ".join(f"{value:.12g}" for value in default_coeffs))
-        ttk.Entry(dlg, textvariable=entry_var, width=78).pack(padx=8, pady=6, fill="x")
+        entry = ttk.Entry(dlg, textvariable=entry_var, width=78)
+        entry.pack(padx=8, pady=6, fill="x")
+        entry.focus_set()
         status_lbl = ttk.Label(dlg, text="", foreground="red")
         status_lbl.pack(anchor="w", padx=8)
 
         btn_frame = ttk.Frame(dlg)
-        btn_frame.pack(fill="x", pady=10, padx=8)
+        btn_frame.pack(fill="x", pady=10, padx=8, side="bottom")
 
         def on_apply(event=None):
             try:
@@ -3093,19 +3721,13 @@ class PsTAAnalysisApp(tk.Tk):
                 status_lbl.config(text=f"Invalid coefficients: {exc}")
                 return
 
-            dlg.destroy()
             self._update_status("Applying Soliton chirp correction...")
             try:
-                self._sync_working_dat_to_matlab()
-                self.eng.workspace["soliton_chirp_coeffs"] = matlab.double([coeffs])
-                self.eng.eval(
-                    "chirpCorrectionSoliton_SC(dat, soliton_chirp_coeffs);",
-                    nargout=0,
-                )
-                self.proc_dat = self.eng.workspace["dat"]
-                self._refresh_dat_from_matlab("Soliton chirp correction applied.")
+                self._get_working_dat().chirpCorrectionSoliton_SC(coeffs)
+                dlg.destroy()
+                self._refresh_dat("Soliton chirp correction applied.")
             except Exception as exc:
-                messagebox.showerror("MATLAB Error", f"Could not apply Soliton chirp correction:\n{exc}")
+                status_lbl.config(text=f"Correction failed: {exc}", wraplength=620)
                 self._update_status("Error during Soliton chirp correction.")
 
         ttk.Button(btn_frame, text="Cancel", command=dlg.destroy).pack(side="right", padx=6)
@@ -3118,36 +3740,35 @@ class PsTAAnalysisApp(tk.Tk):
         self.status_label.config(text=f"Status: {msg}")
         self.update_idletasks()
 
-    def _refresh_dat_from_matlab(self, success_msg):
+    def _refresh_dat(self, success_msg):
         """
-        Refresh Python-side arrays from the current MATLAB dat object.
+        Refresh Python-side arrays from the current experiment object.
         Works for both old TAExperiment and new SolitonTAExperimentSelfContained.
         """
         try:
-            self.proc_dat = self.eng.workspace["dat"]
-
             self._pull_current_dat_arrays()
 
             if hasattr(self, "update_2d_map"):
                 self.update_2d_map()
+
+            # Existing traces must reflect the new baseline or chirp correction.
+            if len(self.ax_time.lines) > 1:
+                self.plot_time_slices()
+            if len(self.ax_wl.lines) > 1:
+                self.plot_wavelength_slices()
 
             self._update_status(success_msg)
             messagebox.showinfo("Done", success_msg)
 
         except Exception as e:
             messagebox.showerror(
-                "MATLAB Error",
-                f"Could not refresh dat from MATLAB workspace:\n{e}"
+                "Processing Error",
+                f"Could not refresh experiment data:\n{e}"
             )
-            self._update_status("Error refreshing MATLAB data.")
+            self._update_status("Error refreshing experiment data.")
             
     def on_closing(self):
         if messagebox.askokcancel("Quit", "Do you want to quit?"):
-            try:
-                if hasattr(self, "eng"):
-                    self.eng.quit()
-            except:
-                pass
             self.destroy()
 
 

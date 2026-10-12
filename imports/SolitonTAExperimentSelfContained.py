@@ -148,14 +148,26 @@ class SolitonTAExperimentSelfContained:
         return index, float(array[index])
 
     def backgroundSubtractSoliton_SC(self, upperBoundTime: float) -> None:
+        if not np.isfinite(upperBoundTime):
+            raise ValueError("Background upper time bound must be finite (ps).")
+        if not self.timesSorted.size:
+            raise ValueError("Load and sort scans before subtracting the background.")
+        if not self.timesSorted[0] <= upperBoundTime <= self.timesSorted[-1]:
+            raise ValueError(
+                f"Background upper bound must be within the measured delay range "
+                f"[{self.timesSorted[0]:.6g}, {self.timesSorted[-1]:.6g}] ps."
+            )
         index, actual_time = self.findNearestIV_SC(self.timesSorted, upperBoundTime)
         # MATLAB's 1:UBT_idx includes the nearest row.
         source = self.TAMeanSorted[:index + 1]
         self.background = source.mean(axis=0)
-        self.backgroundStdev = source.std(axis=0, ddof=1) if source.shape[0] > 1 else np.zeros(source.shape[1])
+        # MATLAB std(source, 1) uses population normalization.
+        self.backgroundStdev = source.std(axis=0, ddof=0)
         self.TAMeanSortedBackgroundSub = self.TAMeanSorted - self.background
         self.backgroundSubtractionUpperBound = actual_time
         self.backgroundSubtractionUpperBoundInxed = index
+        # Keep the public processed matrix consistent for callers outside the GUI.
+        self.chirpCorrectionSoliton_SC(self.chirpCorrectionCoefficients)
 
     def chirpCorrectionSoliton_SC(self, CCcoeffs: Sequence[float], showFigure: bool = False) -> None:
         """Apply the five-term, channel-index chirp polynomial.

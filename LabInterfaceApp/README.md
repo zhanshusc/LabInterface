@@ -30,6 +30,14 @@ Run the source version from this directory with:
 python lab_interface.py
 ```
 
+Drag the dividers between the left controls, center plots, and right controls
+to resize their widths. In the Fitting tab, drag the divider between the TA
+and TCSPC charts to adjust their heights. Plots resize automatically as you
+drag. Panel sizes apply for the current session.
+
+See [Soliton processing inputs](SOLITON_PROCESSING.md) for acquisition settings,
+the supplied MATLAB example values, and the processing sequence.
+
 The PyInstaller configuration and GitHub Actions workflow use this directory
 as their source root.
 

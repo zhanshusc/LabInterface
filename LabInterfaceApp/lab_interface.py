@@ -100,32 +100,32 @@ class PsTAAnalysisApp(tk.Tk):
         self.minsize(1280, 720)
         self._maximize_main_window()
         
-        # Main Grid Layout (3 Columns)
-        # Column 0: analysis/data controls
-        self.grid_columnconfigure(0, weight=2, minsize=280)
-        # Column 1: plots/visualization; this remains the largest area.
-        self.grid_columnconfigure(1, weight=5, minsize=680)
-        # Column 2: fitting/range controls.  TCSPC parameter entry needs room
-        # for parameter names, editable estimates, fixed flags, and bounds.
-        self.grid_columnconfigure(2, weight=3, minsize=440)
+        # Draggable dividers let users allocate space to controls and plots.
+        self.grid_columnconfigure(0, weight=1)
         # Row 0: Main content
         self.grid_rowconfigure(0, weight=1)
         # Row 1: Status Bar
         self.grid_rowconfigure(1, weight=0)
 
+        self.main_panes = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL, sashwidth=8, sashrelief=tk.RAISED,
+            showhandle=True, opaqueresize=True, borderwidth=0,
+        )
+        self.main_panes.grid(row=0, column=0, sticky="nsew")
+
         # Create the Three Major Panels
-        self.left_panel = ttk.Frame(self, padding="10")
-        self.middle_panel = ttk.Frame(self, padding="10")
-        self.right_panel = ttk.Frame(self, padding="10")
+        self.left_panel = ttk.Frame(self.main_panes, padding="10")
+        self.middle_panel = ttk.Frame(self.main_panes, padding="10")
+        self.right_panel = ttk.Frame(self.main_panes, padding="10")
 
         self.left_panel.pack_propagate(False)
         self.middle_panel.pack_propagate(False)
         self.right_panel.pack_propagate(False)
 
-        # Place panels on the grid
-        self.left_panel.grid(row=0, column=0, sticky="nsew")
-        self.middle_panel.grid(row=0, column=1, sticky="nsew")
-        self.right_panel.grid(row=0, column=2, sticky="nsew")
+        # Keep each pane accessible, while allowing more space for any panel.
+        self.main_panes.add(self.left_panel, width=280, minsize=180, stretch="always")
+        self.main_panes.add(self.middle_panel, width=680, minsize=320, stretch="always")
+        self.main_panes.add(self.right_panel, width=440, minsize=240, stretch="always")
 
         # Populate Each Panel 
         self._create_left_panel()
@@ -526,12 +526,12 @@ class PsTAAnalysisApp(tk.Tk):
         self.time_scale_var.trace_add("write", self._on_graph_axis_controls_changed)
 
         # Populate the Fitting tab with independent TA and TCSPC result charts.
-        # This tab will have two plots, so we use a main frame
-        tab3_main_frame = ttk.Frame(tab3)
+        # A horizontal divider also lets users resize the two result charts.
+        tab3_main_frame = tk.PanedWindow(
+            tab3, orient=tk.VERTICAL, sashwidth=8, sashrelief=tk.RAISED,
+            showhandle=True, opaqueresize=True, borderwidth=0,
+        )
         tab3_main_frame.pack(fill=tk.BOTH, expand=True)
-        tab3_main_frame.grid_rowconfigure(0, weight=1)
-        tab3_main_frame.grid_rowconfigure(1, weight=1)
-        tab3_main_frame.grid_columnconfigure(0, weight=1)
         
         # Top Plot: TA data
         self.fitting_ta_fig = Figure(dpi=100)
@@ -543,7 +543,9 @@ class PsTAAnalysisApp(tk.Tk):
         
         self.canvas_tab3_top = FigureCanvasTkAgg(self.fitting_ta_fig, master=tab3_main_frame)
         self.canvas_tab3_top.draw()
-        self.canvas_tab3_top.get_tk_widget().grid(row=0, column=0, sticky="nsew", pady=2)
+        tab3_main_frame.add(
+            self.canvas_tab3_top.get_tk_widget(), minsize=100, stretch="always",
+        )
 
         # Bottom Plot: TCSPC
         self.fitting_tcspc_fig = Figure(dpi=100)
@@ -556,7 +558,9 @@ class PsTAAnalysisApp(tk.Tk):
         
         self.canvas_tab3_bot = FigureCanvasTkAgg(self.fitting_tcspc_fig, master=tab3_main_frame)
         self.canvas_tab3_bot.draw()
-        self.canvas_tab3_bot.get_tk_widget().grid(row=1, column=0, sticky="nsew", pady=2)
+        tab3_main_frame.add(
+            self.canvas_tab3_bot.get_tk_widget(), minsize=100, stretch="always",
+        )
 
 
         # Populate Tab 5: TCSPC Exponential Fit
@@ -2161,7 +2165,7 @@ class PsTAAnalysisApp(tk.Tk):
     def _create_status_bar(self):
         """Creates the bottom status bar"""
         status_bar_frame = ttk.Frame(self, relief='sunken', padding="2 5")
-        status_bar_frame.grid(row=1, column=0, columnspan=3, sticky='ew')
+        status_bar_frame.grid(row=1, column=0, sticky='ew')
         
         self.status_label = ttk.Label(
             status_bar_frame, 
@@ -3309,7 +3313,8 @@ class PsTAAnalysisApp(tk.Tk):
 
         upper_val = simpledialog.askfloat(
             "Background Correction",
-            "Enter upper bound for background subtraction:",
+            "Background upper time bound (ps):\n"
+            "Use a pre-signal delay. The nearest measured delay is included in the average.",
             parent=self
         )
         if upper_val is None:
@@ -3324,17 +3329,15 @@ class PsTAAnalysisApp(tk.Tk):
             dat = self._get_working_dat()
             if self.pipeline_type == "soliton":
                 dat.backgroundSubtractSoliton_SC(float(upper_val))
-                # Keep the active chirp-corrected result in sync with the new baseline.
-                dat.chirpCorrectionSoliton_SC(dat.chirpCorrectionCoefficients)
+                detail = (
+                    f"Background correction complete: averaged {dat.backgroundSubtractionUpperBoundInxed + 1} "
+                    f"delays through {dat.backgroundSubtractionUpperBound:.6g} ps."
+                )
             else:
                 dat.subtractTABackground(float(upper_val))
+                detail = "Background correction complete."
 
-            self._pull_current_dat_arrays()
-
-            self.update_2d_map()
-
-            self.status_label.config(text="Status: Background correction complete.")
-            messagebox.showinfo("Success", "Background subtraction finished successfully.")
+            self._refresh_dat(detail)
 
         except Exception as e:
             messagebox.showerror("Processing Error", str(e))
@@ -3360,6 +3363,11 @@ class PsTAAnalysisApp(tk.Tk):
                 text="Soliton data uses its five-coefficient chirp polynomial.",
                 wraplength=400,
             ).pack(padx=20, pady=(0, 4))
+            ttk.Button(
+                chooser,
+                text="Interactive Point-Selection Correction",
+                command=lambda: [chooser.destroy(), self._open_interactive_dispersion_dialog()],
+            ).pack(fill="x", padx=20, pady=4)
             ttk.Button(
                 chooser,
                 text="Apply Soliton Chirp Correction",
@@ -3465,20 +3473,26 @@ class PsTAAnalysisApp(tk.Tk):
 
     def _open_interactive_dispersion_dialog(self):
         """Pick time-zero points on the TA map, fit them, and correct dispersion."""
-        if self.pipeline_type == "soliton":
-            self._open_soliton_chirp_dialog()
-            return
-
         dat = self._get_working_dat()
-        if not isinstance(dat, TAExperiment):
+        is_soliton = self.pipeline_type == "soliton"
+        if not isinstance(dat, (TAExperiment, SolitonTAExperimentSelfContained)):
             return messagebox.showerror(
                 "Dispersion Correction",
-                "Interactive dispersion correction requires a TAExperiment data set.",
+                "Interactive dispersion correction requires a TA experiment.",
             )
 
-        pixels = np.asarray(dat.pixels, dtype=float).reshape(-1)
-        times = np.asarray(dat.times, dtype=float).reshape(-1)
-        ta_data = np.asarray(dat.TAMean, dtype=float)
+        if is_soliton:
+            # Fit the unshifted baseline-subtracted map. Retain original pixel
+            # numbers even when invalid energy-calibration channels are hidden.
+            pixels = np.arange(1, dat.energyAxis.size + 1, dtype=float)
+            times = np.asarray(dat.timesSorted, dtype=float).reshape(-1)
+            ta_data = np.asarray(dat.TAMeanSortedBackgroundSub, dtype=float)
+            valid = np.isfinite(dat.energyAxis) & (dat.energyAxis > 0)
+            pixels, ta_data = pixels[valid], ta_data[:, valid]
+        else:
+            pixels = np.asarray(dat.pixels, dtype=float).reshape(-1)
+            times = np.asarray(dat.times, dtype=float).reshape(-1)
+            ta_data = np.asarray(dat.TAMean, dtype=float)
         if ta_data.shape != (times.size, pixels.size):
             return messagebox.showerror(
                 "Dispersion Correction", "The TA matrix does not match its pixel and time axes."
@@ -3569,7 +3583,14 @@ class PsTAAnalysisApp(tk.Tk):
             if len(point_x) < degree + 1 or len(set(point_x)) < degree + 1:
                 status_var.set(f"Select at least {degree + 1} points with distinct pixel positions.")
                 return False
-            fit_coefficients = dat.fitDispersionCoefficients(point_x, point_y, degree)
+            try:
+                fit_coefficients = TAExperiment.fitDispersionCoefficients(point_x, point_y, degree)
+            except ValueError as exc:
+                status_var.set(str(exc))
+                return False
+            if is_soliton:
+                # The Soliton processor always expects a4 through a0.
+                fit_coefficients = np.pad(fit_coefficients, (5 - fit_coefficients.size, 0))
             fit_y = np.polyval(fit_coefficients, pixels)
             fitted_curve.set_data(pixels, fit_y)
             coefficient_text = ", ".join(f"{value:.6g}" for value in fit_coefficients)
@@ -3626,7 +3647,10 @@ class PsTAAnalysisApp(tk.Tk):
                 return
             self._update_status("Applying interactive dispersion correction...")
             try:
-                dat.correctDispersion(fit_coefficients)
+                if is_soliton:
+                    dat.chirpCorrectionSoliton_SC(fit_coefficients)
+                else:
+                    dat.correctDispersion(fit_coefficients)
             except Exception as exc:
                 status_var.set(f"Correction failed: {exc}")
                 self._update_status("Error during dispersion correction.")
@@ -3665,8 +3689,7 @@ class PsTAAnalysisApp(tk.Tk):
         dlg.title("Soliton Chirp Correction")
         dlg.transient(self)
         dlg.grab_set()
-        dlg.resizable(False, False)
-        dlg.geometry("650x190")
+        dlg.minsize(650, 240)
 
         ttk.Label(
             dlg,
@@ -3680,12 +3703,14 @@ class PsTAAnalysisApp(tk.Tk):
         ).pack(anchor="w")
 
         entry_var = tk.StringVar(value=", ".join(f"{value:.12g}" for value in default_coeffs))
-        ttk.Entry(dlg, textvariable=entry_var, width=78).pack(padx=8, pady=6, fill="x")
+        entry = ttk.Entry(dlg, textvariable=entry_var, width=78)
+        entry.pack(padx=8, pady=6, fill="x")
+        entry.focus_set()
         status_lbl = ttk.Label(dlg, text="", foreground="red")
         status_lbl.pack(anchor="w", padx=8)
 
         btn_frame = ttk.Frame(dlg)
-        btn_frame.pack(fill="x", pady=10, padx=8)
+        btn_frame.pack(fill="x", pady=10, padx=8, side="bottom")
 
         def on_apply(event=None):
             try:
@@ -3696,13 +3721,13 @@ class PsTAAnalysisApp(tk.Tk):
                 status_lbl.config(text=f"Invalid coefficients: {exc}")
                 return
 
-            dlg.destroy()
             self._update_status("Applying Soliton chirp correction...")
             try:
                 self._get_working_dat().chirpCorrectionSoliton_SC(coeffs)
+                dlg.destroy()
                 self._refresh_dat("Soliton chirp correction applied.")
             except Exception as exc:
-                messagebox.showerror("Processing Error", f"Could not apply Soliton chirp correction:\n{exc}")
+                status_lbl.config(text=f"Correction failed: {exc}", wraplength=620)
                 self._update_status("Error during Soliton chirp correction.")
 
         ttk.Button(btn_frame, text="Cancel", command=dlg.destroy).pack(side="right", padx=6)
@@ -3725,6 +3750,12 @@ class PsTAAnalysisApp(tk.Tk):
 
             if hasattr(self, "update_2d_map"):
                 self.update_2d_map()
+
+            # Existing traces must reflect the new baseline or chirp correction.
+            if len(self.ax_time.lines) > 1:
+                self.plot_time_slices()
+            if len(self.ax_wl.lines) > 1:
+                self.plot_wavelength_slices()
 
             self._update_status(success_msg)
             messagebox.showinfo("Done", success_msg)
